@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use hyprcrop::commands::capture;
 use hyprcrop::domain::config::Config;
 use hyprcrop::domain::error::{AppError, Result};
-use hyprcrop::platform::system::{clipboard, notify};
+use hyprcrop::platform::system::{clipboard, lock, notify};
 use hyprcrop::ui::freeze;
 
 #[derive(Parser)]
@@ -51,7 +51,13 @@ fn run(cli: &Cli, cfg: &Config) -> Result<()> {
         Commands::Portal => finish(capture::capture_portal(cfg)?, cfg)?,
         Commands::Monitor => finish(capture::capture_monitor(cfg)?, cfg)?,
         Commands::All => finish(capture::capture_all(cfg)?, cfg)?,
-        Commands::Freeze => finish(freeze::run_freeze(cfg)?, cfg)?,
+        Commands::Freeze => {
+            let path = {
+                let _lock = lock::FreezeLock::acquire()?;
+                freeze::run_freeze(cfg)?
+            };
+            finish(path, cfg)?
+        }
         Commands::GenerateConfig { .. } => unreachable!(),
     }
 
