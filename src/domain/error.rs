@@ -59,6 +59,9 @@ pub enum AppError {
     #[error("Generic I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("freeze is already running")]
+    FreezeLockBusy,
+
     #[error("Other error: {0}")]
     Other(String),
 }
@@ -69,6 +72,7 @@ impl AppError {
             AppError::CommandNotFound(_, _) => 127,
             AppError::UserCancelled => 130,
             AppError::Config(_) | AppError::TomlParse(_) => 2,
+            AppError::FreezeLockBusy => 1,
             AppError::EmptyGeometry => 1,
             _ => 1,
         }
