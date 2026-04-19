@@ -20,6 +20,12 @@ pub struct FreezeLock {
     _flock: Flock<std::fs::File>,
 }
 
+impl std::fmt::Debug for FreezeLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FreezeLock").finish()
+    }
+}
+
 impl FreezeLock {
     /// Attempt to acquire the exclusive lock.
     ///
@@ -44,7 +50,38 @@ impl FreezeLock {
 }
 
 fn lock_path() -> Result<PathBuf> {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .map_err(|e| AppError::Other(format!("XDG_RUNTIME_DIR is not set: {e}")))?;
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").map_err(|_| {
+        AppError::Other(
+            "XDG_RUNTIME_DIR is not set. This variable is required for IPC and lock files in Wayland environments.".to_string(),
+        )
+    })?;
     Ok(PathBuf::from(runtime_dir).join(LOCK_FILE_NAME))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_freeze_lock_exclusive() {
+        // Mock XDG_RUNTIME_DIR for tests if not set
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", temp_dir.path()) };
+
+        // First acquisition should succeed
+        let lock1 = FreezeLock::acquire();
+        assert!(lock1.is_ok(), "First lock acquisition failed: {:?}", lock1.err());
+
+        // Second acquisition should fail with FreezeLockBusy
+        let lock2 = FreezeLock::acquire();
+        match lock2 {
+            Err(AppError::FreezeLockBusy) => {}
+            _ => panic!("Expected AppError::FreezeLockBusy, got {:?}", lock2),
+        }
+
+        // After dropping lock1, lock3 should succeed
+        drop(lock1);
+        let lock3 = FreezeLock::acquire();
+        assert!(lock3.is_ok(), "Lock acquisition failed after drop: {:?}", lock3.err());
+    }
 }
