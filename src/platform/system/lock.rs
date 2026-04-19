@@ -27,12 +27,19 @@ impl std::fmt::Debug for FreezeLock {
 }
 
 impl FreezeLock {
-    /// Attempt to acquire the exclusive lock.
+    /// Attempt to acquire the exclusive lock using the default XDG_RUNTIME_DIR path.
     ///
     /// Returns `Ok(FreezeLock)` when the lock is acquired, or
     /// `Err(AppError::FreezeLockBusy)` if another instance is already running.
     pub fn acquire() -> Result<Self> {
-        let path = lock_path()?;
+        Self::acquire_at(lock_path()?)
+    }
+
+    /// Attempt to acquire the exclusive lock at an explicit path.
+    ///
+    /// Prefer [`acquire`] in production code. This variant exists to allow
+    /// tests to supply a temporary path without touching environment variables.
+    fn acquire_at(path: PathBuf) -> Result<Self> {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -64,16 +71,19 @@ mod tests {
 
     #[test]
     fn test_freeze_lock_exclusive() {
-        // Mock XDG_RUNTIME_DIR for tests if not set
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", temp_dir.path()) };
+        let lock_file = temp_dir.path().join(LOCK_FILE_NAME);
 
         // First acquisition should succeed
-        let lock1 = FreezeLock::acquire();
-        assert!(lock1.is_ok(), "First lock acquisition failed: {:?}", lock1.err());
+        let lock1 = FreezeLock::acquire_at(lock_file.clone());
+        assert!(
+            lock1.is_ok(),
+            "First lock acquisition failed: {:?}",
+            lock1.err()
+        );
 
         // Second acquisition should fail with FreezeLockBusy
-        let lock2 = FreezeLock::acquire();
+        let lock2 = FreezeLock::acquire_at(lock_file.clone());
         match lock2 {
             Err(AppError::FreezeLockBusy) => {}
             _ => panic!("Expected AppError::FreezeLockBusy, got {:?}", lock2),
@@ -81,7 +91,11 @@ mod tests {
 
         // After dropping lock1, lock3 should succeed
         drop(lock1);
-        let lock3 = FreezeLock::acquire();
-        assert!(lock3.is_ok(), "Lock acquisition failed after drop: {:?}", lock3.err());
+        let lock3 = FreezeLock::acquire_at(lock_file);
+        assert!(
+            lock3.is_ok(),
+            "Lock acquisition failed after drop: {:?}",
+            lock3.err()
+        );
     }
 }

@@ -72,7 +72,7 @@ impl AppError {
             AppError::CommandNotFound(_, _) => 127,
             AppError::UserCancelled => 130,
             AppError::Config(_) | AppError::TomlParse(_) => 2,
-            AppError::FreezeLockBusy => 1,
+            AppError::FreezeLockBusy => 3,
             AppError::EmptyGeometry => 1,
             _ => 1,
         }
@@ -106,6 +106,10 @@ mod tests {
         // Empty geometry -> 1
         let err = AppError::EmptyGeometry;
         assert_eq!(err.exit_code(), 1);
+
+        // Freeze lock busy -> 3
+        let err = AppError::FreezeLockBusy;
+        assert_eq!(err.exit_code(), 3);
 
         // Generic IO -> 1
         let err = AppError::Io(io::Error::other("io error"));
