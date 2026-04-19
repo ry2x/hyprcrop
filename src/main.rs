@@ -52,8 +52,11 @@ fn run(cli: &Cli, cfg: &Config) -> Result<()> {
         Commands::Monitor => finish(capture::capture_monitor(cfg)?, cfg)?,
         Commands::All => finish(capture::capture_all(cfg)?, cfg)?,
         Commands::Freeze => {
-            let _lock = lock::FreezeLock::acquire()?;
-            finish(freeze::run_freeze(cfg)?, cfg)?
+            let path = {
+                let _lock = lock::FreezeLock::acquire()?;
+                freeze::run_freeze(cfg)?
+            };
+            finish(path, cfg)?
         }
         Commands::GenerateConfig { .. } => unreachable!(),
     }

@@ -50,6 +50,7 @@ impl FreezeLock {
         Flock::lock(file, FlockArg::LockExclusiveNonblock)
             .map(|_flock| Self { _flock })
             .map_err(|(_, e)| match e {
+                // EWOULDBLOCK == EAGAIN on Linux; matching one covers both.
                 nix::errno::Errno::EWOULDBLOCK => AppError::FreezeLockBusy,
                 _ => AppError::Other(format!("flock failed on {}: {e}", path.display())),
             })
@@ -59,7 +60,7 @@ impl FreezeLock {
 fn lock_path() -> Result<PathBuf> {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").map_err(|_| {
         AppError::Other(
-            "XDG_RUNTIME_DIR is not set. This variable is required for IPC and lock files in Wayland environments.".to_string(),
+            "XDG_RUNTIME_DIR is not set. This variable is required to determine the freeze lock file location in Wayland environments.".to_string(),
         )
     })?;
     Ok(PathBuf::from(runtime_dir).join(LOCK_FILE_NAME))

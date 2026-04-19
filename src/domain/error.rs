@@ -59,7 +59,7 @@ pub enum AppError {
     #[error("Generic I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("freeze is already running")]
+    #[error("Freeze is already running")]
     FreezeLockBusy,
 
     #[error("Other error: {0}")]
