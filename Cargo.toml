@@ -17,7 +17,7 @@ chrono = { version = "0.4", default-features = false, features = [
     "std",
 ] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
-dirs = "5.0"
+dirs = "6.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 iced = { version = "0.14", default-features = false, features = [
     "image",
@@ -28,12 +28,12 @@ iced = { version = "0.14", default-features = false, features = [
     "web-colors",
     "thread-pool",
 ] }
-iced_layershell = { version = "0.16", default-features = false }
+iced_layershell = { version = "0.17", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
-toml = "0.8"
-tempfile = "3.10"
+thiserror = "2.0"
+toml = "1.1"
+tempfile = "3.27"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = [
     "client",
@@ -44,7 +44,7 @@ wayland-protocols = { version = "0.32", features = [
     "unstable",
     "wayland-client",
 ] }
-nix = { version = "0.29", features = ["mman", "fs", "poll"] }
+nix = { version = "0.31", features = ["mman", "fs", "poll"] }
 memmap2 = "0.9"
 ashpd = { version = "0.13", default-features = false, features = [
     "tokio",
@@ -52,7 +52,7 @@ ashpd = { version = "0.13", default-features = false, features = [
 ] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 pipewire = "0.9"
-notify-rust = "4.5"
+notify-rust = "4.16"
 shell-words = "1.1.1"
 
 [profile.release]
