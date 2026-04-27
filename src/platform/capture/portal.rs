@@ -222,7 +222,7 @@ fn pipewire_capture(node_id: u32, fd: OwnedFd) -> Result<RgbaImage> {
                     // borrowing it, guarding against stale descriptors.
                     if raw_fd < 0 {
                         None
-                    } else if nix::fcntl::fcntl(raw_fd, nix::fcntl::FcntlArg::F_GETFD).is_err() {
+                    } else if nix::fcntl::fcntl(unsafe { BorrowedFd::borrow_raw(raw_fd) }, nix::fcntl::FcntlArg::F_GETFD).is_err() {
                         eprintln!("[hyprcrop] warning: memfd descriptor {raw_fd} is invalid, skipping frame");
                         None
                     } else {
