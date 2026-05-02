@@ -13,7 +13,6 @@ use image::{ImageBuffer, Rgba};
 use memmap2::MmapMut;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::memfd;
-use std::ffi::CString;
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
@@ -396,10 +395,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for CaptureSt
                     }
                 };
 
-                let memfd_name = CString::new("screencopy")
-                    .expect("CString::new cannot fail for static literal");
-                let fd = match memfd::memfd_create(&memfd_name, memfd::MemFdCreateFlag::MFD_CLOEXEC)
-                {
+                let fd = match memfd::memfd_create(c"screencopy", memfd::MFdFlags::MFD_CLOEXEC) {
                     Ok(fd) => fd,
                     Err(e) => {
                         state.frames[fi_idx].failed = true;
