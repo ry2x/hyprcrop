@@ -196,35 +196,25 @@ pub fn parse_monitors(monitors: Vec<HyprMonitor>) -> Vec<MonitorInfo> {
 pub(crate) fn parse_windows(
     clients: Vec<HyprClient>,
     active_workspace_ids: &[i64],
-) -> Vec<WindowInfo> {
+) -> Result<Vec<WindowInfo>> {
     clients
         .into_iter()
-        .filter_map(|c| {
-            if c.hidden {
-                return None;
-            }
-            if !active_workspace_ids.contains(&c.workspace.id) {
-                return None;
-            }
-            let w = c.size[0];
-            let h = c.size[1];
-            if w <= 0 || h <= 0 {
-                return None;
-            }
-            let address = u64::from_str_radix(c.address.trim_start_matches("0x"), 16)
-                .unwrap_or_else(|_| {
-                    eprintln!(
-                        "[hyprcrop] warning: failed to parse window address '{}', defaulting to 0",
-                        c.address
-                    );
-                    0
-                });
-            Some(WindowInfo {
+        .filter(|c| !c.hidden && active_workspace_ids.contains(&c.workspace.id))
+        .filter(|c| c.size[0] > 0 && c.size[1] > 0)
+        .map(|c| {
+            let address =
+                u64::from_str_radix(c.address.trim_start_matches("0x"), 16).map_err(|_| {
+                    AppError::HyprlandProtocol(format!(
+                        "window '{}' has unparseable address field: '{}'",
+                        c.title, c.address
+                    ))
+                })?;
+            Ok(WindowInfo {
                 rect: ScreenRect {
                     x: c.at[0],
                     y: c.at[1],
-                    w,
-                    h,
+                    w: c.size[0],
+                    h: c.size[1],
                 },
                 title: c.title,
                 floating: c.floating,
@@ -328,7 +318,7 @@ mod tests {
         ];
 
         let active_workspaces = vec![1];
-        let parsed = parse_windows(clients, &active_workspaces);
+        let parsed = parse_windows(clients, &active_workspaces).unwrap();
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].title, "Visible Window");
@@ -361,8 +351,11 @@ mod tests {
                 address: "not_a_hex".to_string(),
             },
         ];
-        let parsed = parse_windows(clients, &[1]);
-        assert_eq!(parsed[0].address, 0xdeadbeef_u64);
-        assert_eq!(parsed[1].address, 0_u64);
+        // Valid address parses; bad address is a protocol-level error.
+        let result = parse_windows(clients, &[1]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("BadAddr"));
+        assert!(msg.contains("not_a_hex"));
     }
 }
