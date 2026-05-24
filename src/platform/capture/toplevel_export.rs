@@ -450,7 +450,8 @@ fn attach_and_copy_buffer(
 /// class (app_id). This avoids the u32 truncation limitation of v1.
 ///
 /// # Errors
-/// - `AppError::HyprlandProtocol` — no foreign toplevel matched `window.title` + `window.class`
+/// - `AppError::HyprlandProtocol` — no foreign toplevel matched `window.title` + `window.class`,
+///   or multiple toplevels matched (ambiguous)
 /// - `AppError::Wayland` — required protocol not available, compositor rejected capture, timeout
 /// - `AppError::Image` — failed to save the output image
 pub fn capture_toplevel_to_path(window: &WindowInfo, out_path: &Path) -> Result<()> {
@@ -485,23 +486,36 @@ pub fn capture_toplevel_to_path(window: &WindowInfo, out_path: &Path) -> Result<
         ));
     }
 
-    // Second roundtrip: collect foreign toplevel metadata (title, app_id, done).
-    event_queue
-        .roundtrip(&mut state)
-        .map_err(|e| AppError::Wayland(format!("Wayland roundtrip (toplevels) failed: {e}")))?;
+    // Second phase: wait for all foreign toplevel handles to have finalized metadata.
+    // A single roundtrip is not sufficient — the compositor sends each handle's
+    // title/app_id/done events in a separate batch after the toplevel is announced.
+    // Dispatch until every listed entry has received `done`, or until timeout.
+    dispatch_until(&mut event_queue, &mut state, Duration::from_secs(5), |s| {
+        !s.toplevels.is_empty() && s.toplevels.iter().all(|e| e.done)
+    })?;
 
-    // Find the handle matching title + class (app_id).
-    let handle = state
+    // Find handles matching title + class (app_id), considering only finalized entries.
+    let matches: Vec<_> = state
         .toplevels
         .iter()
-        .find(|e| e.title == window.title && e.app_id == window.class)
-        .map(|e| e.handle.clone())
-        .ok_or_else(|| {
-            AppError::HyprlandProtocol(format!(
+        .filter(|e| e.done && e.title == window.title && e.app_id == window.class)
+        .collect();
+
+    let handle = match matches.len() {
+        0 => {
+            return Err(AppError::HyprlandProtocol(format!(
                 "no foreign toplevel found matching title='{}' class='{}'",
                 window.title, window.class
-            ))
-        })?;
+            )));
+        }
+        1 => matches[0].handle.clone(),
+        n => {
+            return Err(AppError::HyprlandProtocol(format!(
+                "{n} foreign toplevels match title='{}' class='{}' — cannot determine which to capture",
+                window.title, window.class
+            )));
+        }
+    };
 
     let frame = manager.capture_toplevel_with_wlr_toplevel_handle(0, &handle, &qh, ());
 

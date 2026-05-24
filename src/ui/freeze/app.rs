@@ -175,10 +175,6 @@ impl canvas::Program<Message> for SelectionCanvas {
                         Some(HoveredTarget::Window(idx)) => {
                             if self.use_toplevel_export {
                                 let window = self.windows[idx].clone();
-                                // Windows with empty titles can't be matched by the v2 protocol.
-                                if window.title.is_empty() {
-                                    return None;
-                                }
                                 return Some(
                                     canvas::Action::publish(Message::ToplevelWindowSelected(
                                         window,
