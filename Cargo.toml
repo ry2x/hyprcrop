@@ -1,6 +1,6 @@
 [package]
 name = "hyprcrop"
-version = "0.5.0"
+version = "0.5.3"
 edition = "2024"
 authors = ["ry2x"]
 description = "A fast, Hyprland-native screenshot tool written in Rust."
