@@ -175,6 +175,11 @@ impl canvas::Program<Message> for SelectionCanvas {
                         Some(HoveredTarget::Window(idx)) => {
                             if self.use_toplevel_export {
                                 let addr = self.windows[idx].address;
+                                // addr==0 means the IPC address was missing/unparseable;
+                                // ignore the click rather than propagating a guaranteed error.
+                                if addr == 0 {
+                                    return None;
+                                }
                                 return Some(
                                     canvas::Action::publish(Message::ToplevelWindowSelected(addr))
                                         .and_capture(),

@@ -211,14 +211,17 @@ pub(crate) fn parse_windows(
             if w <= 0 || h <= 0 {
                 return None;
             }
-            let address = u64::from_str_radix(c.address.trim_start_matches("0x"), 16)
-                .unwrap_or_else(|_| {
+            let address = if c.address.is_empty() {
+                0
+            } else {
+                u64::from_str_radix(c.address.trim_start_matches("0x"), 16).unwrap_or_else(|_| {
                     eprintln!(
                         "[hyprcrop] warning: failed to parse window address '{}' for '{}', defaulting to 0",
                         c.address, c.title
                     );
                     0
-                });
+                })
+            };
             Some(WindowInfo {
                 rect: ScreenRect {
                     x: c.at[0],
