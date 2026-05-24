@@ -134,12 +134,6 @@ impl Config {
 
         cfg.save_path = expand_tilde(&cfg.save_path);
 
-        // `hyprland-toplevel-export-v1` captures the raw window surface and does not
-        // include any compositor-side decorations, so border expansion has no meaning.
-        if cfg.freeze_window_use_toplevel_export {
-            cfg.capture_window_border = false;
-        }
-
         cfg.validate()?;
 
         Ok(cfg)
@@ -411,14 +405,15 @@ cancel  = "E"
     }
 
     #[test]
-    fn test_freeze_window_use_toplevel_export_forces_capture_window_border_off() {
+    fn test_capture_window_border_independent_of_toplevel_export() {
+        // Both flags are independent; load_from must not mutate one based on the other.
         let f =
             write_toml("capture_window_border = true\nfreeze_window_use_toplevel_export = true");
         let cfg = Config::load_from(f.path()).expect("load");
         assert!(cfg.freeze_window_use_toplevel_export);
         assert!(
-            !cfg.capture_window_border,
-            "capture_window_border must be forced false when freeze_window_use_toplevel_export is true"
+            cfg.capture_window_border,
+            "capture_window_border must not be mutated by load_from when freeze_window_use_toplevel_export is true"
         );
     }
 
