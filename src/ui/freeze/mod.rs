@@ -205,8 +205,8 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
             screencopy::crop_and_save(full_rgba, Some(adjusted), &out_path)?;
             Ok(out_path)
         }
-        Some(Some(FreezeSelection::ToplevelWindow(addr))) => {
-            toplevel_export::capture_toplevel_to_path(addr, &out_path)?;
+        Some(Some(FreezeSelection::ToplevelWindow(window))) => {
+            toplevel_export::capture_toplevel_to_path(&window, &out_path)?;
             Ok(out_path)
         }
     }

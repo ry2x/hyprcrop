@@ -30,8 +30,8 @@ pub enum FreezeSelection {
     /// Crop a rectangular region from the frozen monitor image (crop / monitor modes).
     Region(ScreenRect),
     /// Capture a specific toplevel window via `hyprland-toplevel-export-v1`.
-    /// The value is the Hyprland window address as a `u64`.
-    ToplevelWindow(u64),
+    /// Carries full window metadata for title+class matching in the v2 protocol.
+    ToplevelWindow(WindowInfo),
 }
 
 // ── Message ───────────────────────────────────────────────────────────────────
@@ -42,8 +42,8 @@ pub enum Message {
     ModeSelected(CaptureMode),
     SelectionConfirmed(ScreenRect),
     /// Emitted when `use_toplevel_export` is ON and the user clicks a window.
-    /// Carries the Hyprland window address to be captured via toplevel export.
-    ToplevelWindowSelected(u64),
+    /// Carries the full WindowInfo for title+class matching in the v2 protocol.
+    ToplevelWindowSelected(WindowInfo),
     /// Forces a re-render tick on startup to work around wgpu surface
     /// `SurfaceError::Outdated` on first present (shows white until something
     /// triggers another frame). Decrements `repaint_ticks` until zero.
@@ -174,15 +174,16 @@ impl canvas::Program<Message> for SelectionCanvas {
                         }
                         Some(HoveredTarget::Window(idx)) => {
                             if self.use_toplevel_export {
-                                let addr = self.windows[idx].address;
-                                // addr==0 means the IPC address was missing/unparseable;
-                                // ignore the click rather than propagating a guaranteed error.
-                                if addr == 0 {
+                                let window = self.windows[idx].clone();
+                                // Windows with empty titles can't be matched by the v2 protocol.
+                                if window.title.is_empty() {
                                     return None;
                                 }
                                 return Some(
-                                    canvas::Action::publish(Message::ToplevelWindowSelected(addr))
-                                        .and_capture(),
+                                    canvas::Action::publish(Message::ToplevelWindowSelected(
+                                        window,
+                                    ))
+                                    .and_capture(),
                                 );
                             }
                             let rect = self.windows[idx].rect.expand(self.border_style.border_size);
@@ -399,9 +400,9 @@ impl AppState {
                     Some(Some(FreezeSelection::Region(rect)));
                 return iced::exit();
             }
-            Message::ToplevelWindowSelected(addr) => {
+            Message::ToplevelWindowSelected(window) => {
                 *self.result.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(Some(FreezeSelection::ToplevelWindow(addr)));
+                    Some(Some(FreezeSelection::ToplevelWindow(window)));
                 return iced::exit();
             }
             Message::Cancel => {
