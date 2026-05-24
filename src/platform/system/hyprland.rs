@@ -32,6 +32,7 @@ pub struct HyprClient {
     pub at: [i32; 2],
     pub size: [i32; 2],
     pub title: String,
+    pub class: String,
     pub floating: bool,
     #[serde(rename = "focusHistoryID")]
     pub focus_history_id: i64,
@@ -230,6 +231,7 @@ pub(crate) fn parse_windows(
                     h,
                 },
                 title: c.title,
+                class: c.class,
                 floating: c.floating,
                 focus_history_id: c.focus_history_id,
                 address,
@@ -304,6 +306,7 @@ mod tests {
                 at: [100, 100],
                 size: [800, 600],
                 title: "Visible Window".to_string(),
+                class: "kitty".to_string(),
                 floating: false,
                 focus_history_id: 1,
                 address: "0xd161e7b0".to_string(),
@@ -314,6 +317,7 @@ mod tests {
                 at: [200, 200],
                 size: [800, 600],
                 title: "Hidden Window".to_string(),
+                class: "kitty".to_string(),
                 floating: false,
                 focus_history_id: 2,
                 address: "0xd161e7c0".to_string(),
@@ -324,6 +328,7 @@ mod tests {
                 at: [300, 300],
                 size: [800, 600],
                 title: "Other Workspace Window".to_string(),
+                class: "firefox".to_string(),
                 floating: false,
                 focus_history_id: 3,
                 address: "0xd161e7d0".to_string(),
@@ -335,6 +340,7 @@ mod tests {
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].title, "Visible Window");
+        assert_eq!(parsed[0].class, "kitty");
         assert_eq!(parsed[0].rect.x, 100);
         assert_eq!(parsed[0].rect.w, 800);
         assert_eq!(parsed[0].address, 0xd161e7b0_u64);
@@ -349,6 +355,7 @@ mod tests {
                 at: [0, 0],
                 size: [100, 100],
                 title: "Win".to_string(),
+                class: "app".to_string(),
                 floating: false,
                 focus_history_id: 0,
                 address: "0xdeadbeef".to_string(),
@@ -359,6 +366,7 @@ mod tests {
                 at: [0, 0],
                 size: [100, 100],
                 title: "BadAddr".to_string(),
+                class: "app".to_string(),
                 floating: false,
                 focus_history_id: 1,
                 address: "not_a_hex".to_string(),

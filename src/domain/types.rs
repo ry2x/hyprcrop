@@ -38,12 +38,14 @@ impl ScreenRect {
 pub struct WindowInfo {
     pub rect: ScreenRect,
     pub title: String,
+    /// Window class (application ID), e.g. `"kitty"`, `"firefox"`.
+    /// Used to match `zwlr_foreign_toplevel_handle_v1` when capturing via v2 protocol.
+    pub class: String,
     pub floating: bool,
     /// Lower = more recently focused (0 = topmost floating window).
     pub focus_history_id: i64,
-    /// Hyprland window address (from `hyprctl clients`), used as handle for
-    /// `hyprland-toplevel-export-v1`. `0` if the address field was missing or
-    /// unparseable; `capture_toplevel_to_path` rejects `0` with an error.
+    /// Hyprland window address (from `hyprctl clients`).
+    /// `0` if the address field was missing or unparseable.
     pub address: u64,
 }
 
