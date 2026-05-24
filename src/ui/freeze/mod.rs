@@ -38,10 +38,10 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
     let monitors_t = std::thread::spawn(hyprland::get_monitors);
     let clients_t = std::thread::spawn(hyprland::get_clients);
     let layers_t = std::thread::spawn(hyprland::get_overlay_layers);
-    // When toplevel export is ON, border style is irrelevant (the protocol captures
-    // the raw surface without decorations). The config already enforces
-    // capture_window_border = false in that case, so this check is consistent.
-    let border_style = if cfg.capture_window_border {
+    // Border expansion is irrelevant when toplevel-export is used (the protocol
+    // captures the raw window surface, no compositor decorations). Suppress it here
+    // rather than mutating the global config flag, so non-freeze commands are unaffected.
+    let border_style = if cfg.capture_window_border && !cfg.freeze_window_use_toplevel_export {
         hyprland::get_border_style()
     } else {
         BorderStyle::default()
