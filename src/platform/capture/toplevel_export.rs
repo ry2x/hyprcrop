@@ -358,7 +358,7 @@ fn attach_and_copy_buffer(
 /// A value of `0` indicates a parse failure in `parse_windows` and is rejected immediately.
 ///
 /// # Errors
-/// - `AppError::HyprlandProtocol` — `address` is `0` (IPC address field was missing or unparseable)
+/// - `AppError::HyprlandProtocol` — `address` is `0` (IPC field missing/unparseable) or exceeds `u32::MAX`
 /// - `AppError::Wayland` — protocol not available, compositor rejected capture, timeout
 /// - `AppError::Image` — failed to save the output image
 pub fn capture_toplevel_to_path(address: u64, out_path: &Path) -> Result<()> {
@@ -366,6 +366,11 @@ pub fn capture_toplevel_to_path(address: u64, out_path: &Path) -> Result<()> {
         return Err(AppError::HyprlandProtocol(
             "cannot capture: window address is 0 — Hyprland IPC address field was missing or unparseable".to_string(),
         ));
+    }
+    if address > u32::MAX as u64 {
+        return Err(AppError::HyprlandProtocol(format!(
+            "cannot capture: window address {address:#x} exceeds u32::MAX — not supported by hyprland-toplevel-export-v1"
+        )));
     }
     let conn = Connection::connect_to_env()
         .map_err(|_| AppError::Wayland("Failed to connect to Wayland".to_string()))?;
@@ -390,8 +395,6 @@ pub fn capture_toplevel_to_path(address: u64, out_path: &Path) -> Result<()> {
         })?
         .clone();
 
-    // The v1 protocol handle is a u32. Hyprland window addresses on 64-bit systems
-    // may exceed u32; the protocol truncates to the lower 32 bits.
     let handle = address as u32;
     let frame = manager.capture_toplevel(0, handle, &qh, ());
 
