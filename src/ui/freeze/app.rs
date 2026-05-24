@@ -22,6 +22,18 @@ use crate::domain::config::{
 pub use crate::domain::state::CaptureMode;
 use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
 
+// ── FreezeSelection ───────────────────────────────────────────────────────────
+
+/// The final capture decision returned from the freeze UI.
+#[derive(Debug, Clone)]
+pub enum FreezeSelection {
+    /// Crop a rectangular region from the frozen monitor image (crop / monitor modes).
+    Region(ScreenRect),
+    /// Capture a specific toplevel window via `hyprland-toplevel-export-v1`.
+    /// The value is the Hyprland window address as a `u64`.
+    ToplevelWindow(u64),
+}
+
 // ── Message ───────────────────────────────────────────────────────────────────
 
 #[iced_layershell::to_layer_message(multi)]
@@ -29,6 +41,9 @@ use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, W
 pub enum Message {
     ModeSelected(CaptureMode),
     SelectionConfirmed(ScreenRect),
+    /// Emitted when `use_toplevel_export` is ON and the user clicks a window.
+    /// Carries the Hyprland window address to be captured via toplevel export.
+    ToplevelWindowSelected(u64),
     /// Forces a re-render tick on startup to work around wgpu surface
     /// `SurfaceError::Outdated` on first present (shows white until something
     /// triggers another frame). Decrements `repaint_ticks` until zero.
@@ -61,6 +76,9 @@ pub struct SelectionCanvas {
     pub border_style: BorderStyle,
     /// User-configured colors for the canvas overlay.
     pub colors: FreezeColors,
+    /// When `true`, window clicks emit `ToplevelWindowSelected` instead of
+    /// `SelectionConfirmed`, triggering the `hyprland-toplevel-export-v1` path.
+    pub use_toplevel_export: bool,
 }
 
 // Canvas-internal mutable state
@@ -155,6 +173,13 @@ impl canvas::Program<Message> for SelectionCanvas {
                             );
                         }
                         Some(HoveredTarget::Window(idx)) => {
+                            if self.use_toplevel_export {
+                                let addr = self.windows[idx].address;
+                                return Some(
+                                    canvas::Action::publish(Message::ToplevelWindowSelected(addr))
+                                        .and_capture(),
+                                );
+                            }
                             let rect = self.windows[idx].rect.expand(self.border_style.border_size);
                             return Some(
                                 canvas::Action::publish(Message::SelectionConfirmed(rect))
@@ -296,13 +321,14 @@ pub struct AppStateConfig {
     pub windows: Arc<Vec<WindowInfo>>,
     pub layers: Arc<Vec<LayerSurface>>,
     pub monitors: Arc<Vec<MonitorInfo>>,
-    pub result: Arc<Mutex<Option<Option<ScreenRect>>>>,
+    pub result: Arc<Mutex<Option<Option<FreezeSelection>>>>,
     pub glyphs: FreezeGlyphs,
     pub toolbar_position: ToolbarPosition,
     pub border_style: BorderStyle,
     pub initial_mode: CaptureMode,
     pub colors: FreezeColors,
     pub freeze_buttons: FreezeButtons,
+    pub use_toplevel_export: bool,
 }
 
 pub struct AppState {
@@ -316,10 +342,10 @@ pub struct AppState {
     pub windows: Arc<Vec<WindowInfo>>,
     pub layers: Arc<Vec<LayerSurface>>,
     pub monitors: Arc<Vec<MonitorInfo>>,
-    /// None        = cancelled (ESC, never set)
-    /// Some(None)  = "All" selected (use full screenshot)
-    /// Some(Some)  = region selected
-    pub result: Arc<Mutex<Option<Option<ScreenRect>>>>,
+    /// None                   = cancelled (ESC, never set)
+    /// Some(None)             = "All" selected (use full screenshot)
+    /// Some(Some(selection))  = region or toplevel window selected
+    pub result: Arc<Mutex<Option<Option<FreezeSelection>>>>,
     /// Counts down from N on startup. While > 0, a 50 ms timer drives
     /// repeated renders so that wgpu surfaces that fail their first
     /// `compositor.present()` (SurfaceError::Outdated) get a second chance.
@@ -329,6 +355,7 @@ pub struct AppState {
     border_style: BorderStyle,
     colors: FreezeColors,
     freeze_buttons: FreezeButtons,
+    use_toplevel_export: bool,
 }
 
 impl AppState {
@@ -348,6 +375,7 @@ impl AppState {
             border_style: cfg.border_style,
             colors: cfg.colors,
             freeze_buttons: cfg.freeze_buttons,
+            use_toplevel_export: cfg.use_toplevel_export,
         }
     }
 
@@ -362,16 +390,19 @@ impl AppState {
                 crate::domain::state::save_last_mode(mode);
             }
             Message::SelectionConfirmed(rect) => {
-                *self.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(Some(rect));
+                *self.result.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Some(FreezeSelection::Region(rect)));
+                return iced::exit();
+            }
+            Message::ToplevelWindowSelected(addr) => {
+                *self.result.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Some(FreezeSelection::ToplevelWindow(addr)));
                 return iced::exit();
             }
             Message::Cancel => {
                 return iced::exit();
             }
             Message::Tick => {
-                // Decrement the startup repaint counter. The state mutation
-                // marks the UI dirty so iced calls view() for every window,
-                // giving wgpu surfaces another chance to present their frame.
                 self.repaint_ticks = self.repaint_ticks.saturating_sub(1);
             }
             // Layershell control variants generated by macro — no-op
@@ -404,6 +435,7 @@ impl AppState {
             monitor_offset,
             border_style: self.border_style,
             colors: self.colors,
+            use_toplevel_export: self.use_toplevel_export,
         };
 
         let toolbar = self.toolbar();
