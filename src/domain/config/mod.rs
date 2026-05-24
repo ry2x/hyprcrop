@@ -36,6 +36,10 @@ fn default_capture_window_border() -> bool {
     false
 }
 
+fn default_freeze_window_use_toplevel_export() -> bool {
+    false
+}
+
 fn default_save_path() -> PathBuf {
     dirs::picture_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
@@ -80,6 +84,13 @@ pub struct Config {
     /// Buttons set to `false` are omitted; if all are `false`, the toolbar is hidden.
     #[serde(default)]
     pub freeze_buttons: FreezeButtons,
+
+    /// When `true`, freeze-mode window capture uses `hyprland-toplevel-export-v1` to
+    /// directly capture the window surface instead of cropping from the frozen monitor
+    /// image. Incompatible with `capture_window_border`; that option is forced `false`
+    /// when this is enabled.
+    #[serde(default = "default_freeze_window_use_toplevel_export")]
+    pub freeze_window_use_toplevel_export: bool,
 }
 
 impl Default for Config {
@@ -93,6 +104,7 @@ impl Default for Config {
             notifications: Notifications::default(),
             freeze_colors: FreezeColors::default(),
             freeze_buttons: FreezeButtons::default(),
+            freeze_window_use_toplevel_export: default_freeze_window_use_toplevel_export(),
         }
     }
 }
@@ -121,6 +133,13 @@ impl Config {
         };
 
         cfg.save_path = expand_tilde(&cfg.save_path);
+
+        // `hyprland-toplevel-export-v1` captures the raw window surface and does not
+        // include any compositor-side decorations, so border expansion has no meaning.
+        if cfg.freeze_window_use_toplevel_export {
+            cfg.capture_window_border = false;
+        }
+
         cfg.validate()?;
 
         Ok(cfg)
@@ -378,6 +397,38 @@ cancel  = "E"
         );
         assert_eq!(parsed.freeze_buttons.all, original.freeze_buttons.all);
         assert_eq!(parsed.freeze_buttons.cancel, original.freeze_buttons.cancel);
+        assert_eq!(
+            parsed.freeze_window_use_toplevel_export,
+            original.freeze_window_use_toplevel_export
+        );
+    }
+
+    #[test]
+    fn test_freeze_window_use_toplevel_export_default_false() {
+        assert!(!Config::default().freeze_window_use_toplevel_export);
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(!cfg.freeze_window_use_toplevel_export);
+    }
+
+    #[test]
+    fn test_freeze_window_use_toplevel_export_forces_capture_window_border_off() {
+        let f =
+            write_toml("capture_window_border = true\nfreeze_window_use_toplevel_export = true");
+        let cfg = Config::load_from(f.path()).expect("load");
+        assert!(cfg.freeze_window_use_toplevel_export);
+        assert!(
+            !cfg.capture_window_border,
+            "capture_window_border must be forced false when freeze_window_use_toplevel_export is true"
+        );
+    }
+
+    #[test]
+    fn test_capture_window_border_unaffected_when_toplevel_export_off() {
+        let f =
+            write_toml("capture_window_border = true\nfreeze_window_use_toplevel_export = false");
+        let cfg = Config::load_from(f.path()).expect("load");
+        assert!(cfg.capture_window_border);
+        assert!(!cfg.freeze_window_use_toplevel_export);
     }
 
     #[test]

@@ -41,6 +41,9 @@ pub struct WindowInfo {
     pub floating: bool,
     /// Lower = more recently focused (0 = topmost floating window).
     pub focus_history_id: i64,
+    /// Hyprland window address (from `hyprctl clients`), used as handle for
+    /// `hyprland-toplevel-export-v1`. Zero if the address could not be parsed.
+    pub address: u64,
 }
 
 #[derive(Debug, Clone)]
