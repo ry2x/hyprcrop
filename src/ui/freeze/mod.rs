@@ -12,7 +12,9 @@ mod app;
 
 pub use app::CaptureMode;
 
-use app::{AppState, AppStateConfig, Message, app_subscription, app_update, app_view};
+use app::{
+    AppState, AppStateConfig, FreezeSelection, Message, app_subscription, app_update, app_view,
+};
 use iced::Task;
 use iced::widget::image as iced_image;
 use iced_layershell::{
@@ -29,13 +31,17 @@ use crate::domain::config::Config;
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, ScreenRect};
 use crate::platform::capture::screencopy;
+use crate::platform::capture::toplevel_export;
 use crate::platform::system::hyprland::{self};
 
 pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
     let monitors_t = std::thread::spawn(hyprland::get_monitors);
     let clients_t = std::thread::spawn(hyprland::get_clients);
     let layers_t = std::thread::spawn(hyprland::get_overlay_layers);
-    let border_style = if cfg.capture_window_border {
+    // Border expansion is irrelevant when toplevel-export is used (the protocol
+    // captures the raw window surface, no compositor decorations). Suppress it here
+    // rather than mutating the global config flag, so non-freeze commands are unaffected.
+    let border_style = if cfg.capture_window_border && !cfg.freeze_window_use_toplevel_export {
         hyprland::get_border_style()
     } else {
         BorderStyle::default()
@@ -88,7 +94,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
         (m.rect.w as u32, m.rect.h as u32)
     };
 
-    let result: Arc<Mutex<Option<Option<ScreenRect>>>> = Arc::new(Mutex::new(None));
+    let result: Arc<Mutex<Option<Option<FreezeSelection>>>> = Arc::new(Mutex::new(None));
 
     {
         let result_clone = result.clone();
@@ -124,6 +130,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
         let toolbar_position = cfg.toolbar_position;
         let colors = cfg.freeze_colors;
         let freeze_buttons = cfg.freeze_buttons;
+        let use_toplevel_export = cfg.freeze_window_use_toplevel_export;
 
         iced_layershell::daemon(
             move || {
@@ -151,6 +158,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                     initial_mode,
                     colors,
                     freeze_buttons,
+                    use_toplevel_export,
                 });
                 (state, Task::batch(spawn_tasks))
             },
@@ -176,19 +184,29 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
         .expect("UI thread panicked and poisoned result mutex")
         .take();
 
+    let out_path = cfg.output_path();
+
     match selected {
         None => Err(AppError::UserCancelled),
-        Some(region) => {
-            let out_path = cfg.output_path();
+        Some(None) => {
+            // "All" mode: save the full frozen image.
+            screencopy::crop_and_save(full_rgba, None, &out_path)?;
+            Ok(out_path)
+        }
+        Some(Some(FreezeSelection::Region(r))) => {
             // Translate global logical coordinates → image coordinates.
             // The image origin is (min_x, min_y) in global logical space.
-            let adjusted = region.map(|r| ScreenRect {
+            let adjusted = ScreenRect {
                 x: r.x - min_x,
                 y: r.y - min_y,
                 w: r.w,
                 h: r.h,
-            });
-            screencopy::crop_and_save(full_rgba, adjusted, &out_path)?;
+            };
+            screencopy::crop_and_save(full_rgba, Some(adjusted), &out_path)?;
+            Ok(out_path)
+        }
+        Some(Some(FreezeSelection::ToplevelWindow(addr))) => {
+            toplevel_export::capture_toplevel_to_path(addr, &out_path)?;
             Ok(out_path)
         }
     }

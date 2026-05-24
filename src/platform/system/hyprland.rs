@@ -35,6 +35,9 @@ pub struct HyprClient {
     pub floating: bool,
     #[serde(rename = "focusHistoryID")]
     pub focus_history_id: i64,
+    /// Hex address string like `"0x..."`, used as the toplevel export handle.
+    #[serde(default)]
+    pub address: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -208,6 +211,17 @@ pub(crate) fn parse_windows(
             if w <= 0 || h <= 0 {
                 return None;
             }
+            let address = if c.address.is_empty() {
+                0
+            } else {
+                u64::from_str_radix(c.address.trim_start_matches("0x"), 16).unwrap_or_else(|_| {
+                    eprintln!(
+                        "[hyprcrop] warning: failed to parse window address '{}' for '{}', defaulting to 0",
+                        c.address, c.title
+                    );
+                    0
+                })
+            };
             Some(WindowInfo {
                 rect: ScreenRect {
                     x: c.at[0],
@@ -218,6 +232,7 @@ pub(crate) fn parse_windows(
                 title: c.title,
                 floating: c.floating,
                 focus_history_id: c.focus_history_id,
+                address,
             })
         })
         .collect()
@@ -291,6 +306,7 @@ mod tests {
                 title: "Visible Window".to_string(),
                 floating: false,
                 focus_history_id: 1,
+                address: "0xd161e7b0".to_string(),
             },
             HyprClient {
                 hidden: true,
@@ -300,6 +316,7 @@ mod tests {
                 title: "Hidden Window".to_string(),
                 floating: false,
                 focus_history_id: 2,
+                address: "0xd161e7c0".to_string(),
             },
             HyprClient {
                 hidden: false,
@@ -309,6 +326,7 @@ mod tests {
                 title: "Other Workspace Window".to_string(),
                 floating: false,
                 focus_history_id: 3,
+                address: "0xd161e7d0".to_string(),
             },
         ];
 
@@ -319,5 +337,39 @@ mod tests {
         assert_eq!(parsed[0].title, "Visible Window");
         assert_eq!(parsed[0].rect.x, 100);
         assert_eq!(parsed[0].rect.w, 800);
+        assert_eq!(parsed[0].address, 0xd161e7b0_u64);
+    }
+
+    #[test]
+    fn test_window_address_parsing() {
+        let clients = vec![
+            HyprClient {
+                hidden: false,
+                workspace: HyprWorkspace { id: 1 },
+                at: [0, 0],
+                size: [100, 100],
+                title: "Win".to_string(),
+                floating: false,
+                focus_history_id: 0,
+                address: "0xdeadbeef".to_string(),
+            },
+            HyprClient {
+                hidden: false,
+                workspace: HyprWorkspace { id: 1 },
+                at: [0, 0],
+                size: [100, 100],
+                title: "BadAddr".to_string(),
+                floating: false,
+                focus_history_id: 1,
+                address: "not_a_hex".to_string(),
+            },
+        ];
+        let parsed = parse_windows(clients, &[1]);
+        // Valid address is parsed correctly.
+        assert_eq!(parsed[0].address, 0xdeadbeef_u64);
+        // Unparseable address falls back to 0; window is still included (not dropped).
+        // capture_toplevel_to_path will reject address=0 with HyprlandProtocol error
+        // if the toplevel-export path is actually invoked.
+        assert_eq!(parsed[1].address, 0_u64);
     }
 }

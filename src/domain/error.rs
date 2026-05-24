@@ -23,6 +23,9 @@ pub enum AppError {
     #[error("Hyprland IPC environment variable {0} error: {1}")]
     HyprlandEnvVar(&'static str, #[source] std::env::VarError),
 
+    #[error("Hyprland IPC protocol error: {0}")]
+    HyprlandProtocol(String),
+
     #[error("JSON parse error in {0}: {1}")]
     JsonParse(String, #[source] serde_json::Error),
 
