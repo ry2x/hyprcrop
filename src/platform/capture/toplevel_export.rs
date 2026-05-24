@@ -197,8 +197,10 @@ impl Dispatch<hyprland_toplevel_export_frame_v1::HyprlandToplevelExportFrameV1, 
             }
 
             hyprland_toplevel_export_frame_v1::Event::Flags { flags } => {
-                fi.y_invert =
-                    flags == WEnum::Value(hyprland_toplevel_export_frame_v1::Flags::YInvert);
+                fi.y_invert = matches!(
+                    flags,
+                    WEnum::Value(f) if f.contains(hyprland_toplevel_export_frame_v1::Flags::YInvert)
+                );
             }
 
             hyprland_toplevel_export_frame_v1::Event::Ready { .. } => {
@@ -249,10 +251,12 @@ fn dispatch_until(
         {
             let fd = event_queue.as_fd();
             let mut pollfds = [PollFd::new(fd, PollFlags::POLLIN)];
-            let _ = poll(&mut pollfds, PollTimeout::from(timeout_ms));
+            poll(&mut pollfds, PollTimeout::from(timeout_ms))
+                .map_err(|e| AppError::Wayland(format!("poll failed: {e}")))?;
         }
         if let Some(g) = guard {
-            let _ = g.read();
+            g.read()
+                .map_err(|e| AppError::Wayland(format!("Wayland read failed: {e}")))?;
         }
     }
 }
@@ -351,11 +355,18 @@ fn attach_and_copy_buffer(
 ///
 /// `address` is the Hyprland window handle as returned by `hyprctl -j clients`
 /// (the `address` field, e.g. `"0xdeadbeef"`), cast to `u32` for the v1 protocol.
+/// A value of `0` indicates a parse failure in `parse_windows` and is rejected immediately.
 ///
 /// # Errors
+/// - `AppError::HyprlandProtocol` — `address` is `0` (IPC address field was missing or unparseable)
 /// - `AppError::Wayland` — protocol not available, compositor rejected capture, timeout
 /// - `AppError::Image` — failed to save the output image
 pub fn capture_toplevel_to_path(address: u64, out_path: &Path) -> Result<()> {
+    if address == 0 {
+        return Err(AppError::HyprlandProtocol(
+            "cannot capture: window address is 0 — Hyprland IPC address field was missing or unparseable".to_string(),
+        ));
+    }
     let conn = Connection::connect_to_env()
         .map_err(|_| AppError::Wayland("Failed to connect to Wayland".to_string()))?;
     let display = conn.display();
@@ -445,12 +456,43 @@ pub fn capture_toplevel_to_path(address: u64, out_path: &Path) -> Result<()> {
         .format
         .ok_or_else(|| AppError::Wayland("format not set after successful capture".to_string()))?;
 
+    // Resolve the pixel-channel layout once before the nested loop so the
+    // format match is not repeated for every pixel.
+    let bgr = matches!(
+        format,
+        WEnum::Value(wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888)
+    );
+    let force_opaque = matches!(
+        format,
+        WEnum::Value(wl_shm::Format::Xrgb8888 | wl_shm::Format::Xbgr8888)
+    );
+
     let mut img: ImageBuffer<image::Rgba<u8>, Vec<u8>> = ImageBuffer::new(fi.width, fi.height);
+    let stride = fi.stride as usize;
     for y in 0..fi.height {
-        let row_offset = y as usize * fi.stride as usize;
+        let row_offset = y as usize * stride;
         for x in 0..fi.width {
             let offset = row_offset + x as usize * 4;
-            img.put_pixel(x, y, read_pixel_rgba(mmap, offset, format));
+            let (r, g, b, a) = if bgr {
+                (
+                    mmap[offset + 2],
+                    mmap[offset + 1],
+                    mmap[offset],
+                    mmap[offset + 3],
+                )
+            } else {
+                (
+                    mmap[offset],
+                    mmap[offset + 1],
+                    mmap[offset + 2],
+                    mmap[offset + 3],
+                )
+            };
+            img.put_pixel(
+                x,
+                y,
+                image::Rgba([r, g, b, if force_opaque { 255 } else { a }]),
+            );
         }
     }
 
@@ -465,26 +507,4 @@ pub fn capture_toplevel_to_path(address: u64, out_path: &Path) -> Result<()> {
     img.save(out_path).map_err(AppError::from)?;
 
     Ok(())
-}
-
-// ── Pixel helpers (same logic as screencopy) ──────────────────────────────────
-
-fn read_pixel_rgba(data: &[u8], offset: usize, format: WEnum<wl_shm::Format>) -> image::Rgba<u8> {
-    let ok = offset
-        .checked_add(3)
-        .is_some_and(|max_idx| max_idx < data.len());
-    if !ok {
-        return image::Rgba([0, 0, 0, 0]);
-    }
-    let b0 = data[offset];
-    let b1 = data[offset + 1];
-    let b2 = data[offset + 2];
-    let b3 = data[offset + 3];
-    match format {
-        WEnum::Value(wl_shm::Format::Argb8888) => image::Rgba([b2, b1, b0, b3]),
-        WEnum::Value(wl_shm::Format::Xrgb8888) => image::Rgba([b2, b1, b0, 255]),
-        WEnum::Value(wl_shm::Format::Abgr8888) => image::Rgba([b0, b1, b2, b3]),
-        WEnum::Value(wl_shm::Format::Xbgr8888) => image::Rgba([b0, b1, b2, 255]),
-        _ => image::Rgba([b2, b1, b0, b3]),
-    }
 }

@@ -42,7 +42,8 @@ pub struct WindowInfo {
     /// Lower = more recently focused (0 = topmost floating window).
     pub focus_history_id: i64,
     /// Hyprland window address (from `hyprctl clients`), used as handle for
-    /// `hyprland-toplevel-export-v1`. Zero if the address could not be parsed.
+    /// `hyprland-toplevel-export-v1`. `0` if the address field was missing or
+    /// unparseable; `capture_toplevel_to_path` rejects `0` with an error.
     pub address: u64,
 }
 
