@@ -54,7 +54,10 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 pipewire = "0.9"
 notify-rust = "4.16"
 shell-words = "1.1.1"
-wayland-protocols-hyprland = { version = "1.2", features = ["client", "wayland-client"] }
+wayland-protocols-hyprland = { version = "1.2", features = [
+    "client",
+    "wayland-client",
+] }
 
 [profile.release]
 opt-level = 3
