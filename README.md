@@ -16,13 +16,14 @@ HyprCrop is not a wrapper of grim; it captures the screen directly via wayland A
 
 ## Dependencies
 
-| Package          | Note                                                    |
-| :--------------- | :------------------------------------------------------ |
-| **Hyprland**     | Tested on `v0.5.3` and later.                           |
-| **libnotify**    | Required for desktop notifications.                     |
-| **pipewire**     | Required for screen capture.                            |
-| **slurp**        | Required for interactive region selection in crop mode. |
-| **wl-clipboard** | Required for copying screenshots to the clipboard.      |
+| Package                         | Note                                                    |
+| :------------------------------ | :------------------------------------------------------ |
+| **Hyprland**                    | Tested on `v0.5.3` and later.                           |
+| **libnotify**                   | Required for desktop notifications.                     |
+| **xdg-desktop-portal-hyprland** | Required for portal capture mode.                       |
+| **pipewire**                    | Required for screen capture.                            |
+| **slurp**                       | Required for interactive region selection in crop mode. |
+| **wl-clipboard**                | Required for copying screenshots to the clipboard.      |
 
 > [!CAUTION]
 > A [Nerd Font](https://www.nerdfonts.com/) is required to display default glyphs in the freeze mode toolbar. Check the [configuration section](#configuration) for details on customizing icons.
@@ -104,7 +105,7 @@ Icon glyphs can be customized in the config file. Check the [configuration secti
 
 ### Hyprland key-bind example
 
-- ~/.config/hypr/hyprland.conf
+- `~/.config/hypr/hyprland.conf`
 
 ```ini
 bindd = SUPER, S, ScreenshotMonitor,    exec, hyprcrop monitor
@@ -112,7 +113,7 @@ bindd = SUPER SHIFT, S, FreezeMode,     exec, hyprcrop freeze
 bindd = , Print, ScreenshotFull,        exec, hyprcrop all
 ```
 
-- ~/.config/hypr/hyprland.lua
+- `~/.config/hypr/hyprland.lua`
 
 ```lua
 hl.bind("SUPER + S",            hl.dsp.exec_cmd("hyprcrop monitor") )
