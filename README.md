@@ -1,8 +1,8 @@
 # HyprCrop
 
+[![MIT License](http://img.shields.io/badge/license-MIT-blue.svg?style=flat)](./LICENSE) [![Release](https://github.com/ry2x/hyprcrop/actions/workflows/release.yml/badge.svg)](https://github.com/ry2x/hyprcrop/actions/workflows/release.yml)
 A fast, Hyprland-native screenshot tool written in Rust.
-
-日本語版README: [README.ja.md](./README.ja.md)
+HyprCrop is not a wrapper of grim; it captures the screen directly via wayland APIs!
 
 ## Features
 
@@ -13,23 +13,15 @@ A fast, Hyprland-native screenshot tool written in Rust.
 - Desktop notification on success/failure
 - Configurable save path, filename pattern, freeze toolbar glyphs (including size), toolbar position, per-button visibility, window border inclusion, and full UI color theming
 
-## Requirements
+## Dependencies
 
-The following tools must be available on `$PATH`:
-
-| Tool      | Purpose                                  |
-| --------- | ---------------------------------------- |
-| `slurp`   | Interactive region selection (crop mode) |
-| `wl-copy` | Copy image to Wayland clipboard          |
-
-Desktop notifications are sent natively via D-Bus (no `notify-send` required). A running
-notification daemon (e.g. `mako`, `dunst`) is needed to display them.
-
-Screen capture is performed natively via the **`zwlr_screencopy_manager_v1`** Wayland protocol
-(wlroots-based compositors: Hyprland, sway, etc.) — no external capture tool is required.
-
-Window and monitor metadata is fetched directly via the **Hyprland IPC socket**
-(`$XDG_RUNTIME_DIR/hypr/<sig>/.socket.sock`).
+| Package          | Note                                                    |
+| :--------------- | :------------------------------------------------------ |
+| **Hyprland**     | Tested on `v0.5.3` and later.                           |
+| **libnotify**    | Required for desktop notifications.                     |
+| **pipewire**     | Required for screen capture.                            |
+| **slurp**        | Required for interactive region selection in crop mode. |
+| **wl-clipboard** | Required for copying screenshots to the clipboard.      |
 
 > [!CAUTION]
 > A [Nerd Font](https://www.nerdfonts.com/) is required to display default glyphs in the freeze mode toolbar. Check the [configuration section](#configuration) for details on customizing icons.
@@ -38,19 +30,30 @@ Window and monitor metadata is fetched directly via the **Hyprland IPC socket**
 
 ### Arch Linux (AUR)
 
+- `hyprcrop`: [build from source package](https://aur.archlinux.org/packages/hyprcrop)
+
 ```sh
-yay -S hyprcrop
-# or
-paru -S hyprcrop
+yay -S hyprcrop        # builds from source
+```
+
+- `hyprcrop-bin`: [prebuilt binary package](https://aur.archlinux.org/packages/hyprcrop-bin)
+
+```sh
+yay -S hyprcrop-bin    # prebuilt binary
 ```
 
 ### Build from source (Manual)
 
+> [!WARNING]
+> This method will install the latest commit, which may be unstable. For a stable release, build from a [tagged release](https://github.com/ry2x/hyprcrop/releases).
+
 ```sh
 git clone https://github.com/ry2x/hyprcrop.git
 cd hyprcrop
-cargo build --release
-cp target/release/hyprcrop ~/.local/bin/
+cargo build --frozen --release
+install -Dm755 target/release/hyprcrop ~/.local/bin/
+# Optional: Run tests to verify everything is working before installing
+cargo test --frozen
 ```
 
 ## Usage
@@ -60,7 +63,7 @@ hyprcrop [--config <FILE>] <SUBCOMMAND>
 ```
 
 | Subcommand        | Description                                                                          |
-| ----------------- | ------------------------------------------------------------------------------------ |
+| :---------------- | :----------------------------------------------------------------------------------- |
 | `crop`            | Select a region with slurp and capture it                                            |
 | `window`          | Capture the active window (geometry via Hyprland IPC)                                |
 | `portal`          | Capture a selected window or monitor via xdg-desktop-portal (shows WM source-picker) |
@@ -68,6 +71,8 @@ hyprcrop [--config <FILE>] <SUBCOMMAND>
 | `all`             | Capture all monitors                                                                 |
 | `freeze`          | Freeze screen and select interactively                                               |
 | `generate-config` | Write a default config file                                                          |
+
+After capture, the screenshot is saved to disk and copied to the clipboard. A desktop notification is shown on success or failure.
 
 ### Global flag
 
@@ -84,8 +89,8 @@ Freeze mode overlays the screen and lets you switch capture type via a toolbar:
 
 ![bar-image](./bar.png)
 
-| Mode    | Behaviour                       |
-| ------- | ------------------------------- |
+| Mode    | Behavior                        |
+| :------ | :------------------------------ |
 | Crop    | Drag to draw a custom rectangle |
 | Window  | Hover and click a window        |
 | Monitor | Hover and click a monitor       |
@@ -96,13 +101,22 @@ Icon glyphs can be customized in the config file. Check the [configuration secti
 
 **Keyboard:** `Escape` cancels and exits.
 
-### Hyprland keybind example
+### Hyprland key-bind example
+
+- ~/.config/hypr/hyprland.conf
 
 ```ini
-# ~/.config/hypr/hyprland.conf
 bindd = SUPER, S, ScreenshotMonitor,    exec, hyprcrop monitor
 bindd = SUPER SHIFT, S, FreezeMode,     exec, hyprcrop freeze
 bindd = , Print, ScreenshotFull,        exec, hyprcrop all
+```
+
+- ~/.config/hypr/hyprland.lua
+
+```lua
+hl.bind("SUPER + S",            hl.dsp.exec_cmd("hyprcrop monitor") )
+hl.bind("SUPER + SHIFT + S",    hl.dsp.exec_cmd("hyprcrop freeze") )
+hl.bind("Print",                hl.dsp.exec_cmd("hyprcrop all") )
 ```
 
 ## Configuration
@@ -119,7 +133,11 @@ hyprcrop generate-config --force
 hyprcrop --config ~/my-config.toml generate-config
 ```
 
-### Sample config
+### Example configs
+
+<details>
+
+<summary>Example Config with Descriptions</summary>
 
 ```toml
 # Directory where screenshots are saved.
@@ -183,48 +201,127 @@ error_body       = "{error}"
 # All colors are CSS-style hex strings: "#RRGGBBAA" (or "#RRGGBB", "#RGBA", "#RGB").
 # Every key is optional; omitted keys fall back to the built-in defaults shown below.
 
-# [freeze_colors.overlay]
-# background = "#00000059"     # dim over frozen screen
+[freeze_colors.overlay]
+background = "#00000059"     # dim over frozen screen
 
-# [freeze_colors.toolbar]
-# background = "#141414D9"  # toolbar pill background
+[freeze_colors.toolbar]
+background = "#141414D9"  # toolbar pill background
 
-# [freeze_colors.button]
-# idle_background   = "#797A7DFF"
-# idle_text         = "#E6E6E6FF"
-# active_background = "#5865F2FF"
-# active_text       = "#FFFFFFFF"
-# hover_background  = "#6B79F5FF"
-# hover_text        = "#FFFFFFFF"
+[freeze_colors.button]
+idle_background   = "#797A7DFF"
+idle_text         = "#E6E6E6FF"
+active_background = "#5865F2FF"
+active_text       = "#FFFFFFFF"
+hover_background  = "#6B79F5FF"
+hover_text        = "#FFFFFFFF"
 
-# [freeze_colors.cancel_button]
-# idle_background  = "#C3423FFF"
-# idle_text        = "#FFFFFFFF"
-# hover_background = "#D44A47FF"
-# hover_text       = "#FFFFFFFF"
+[freeze_colors.cancel_button]
+idle_background  = "#C3423FFF"
+idle_text        = "#FFFFFFFF"
+hover_background = "#D44A47FF"
+hover_text       = "#FFFFFFFF"
 
-# [freeze_colors.window_frame]
-# fill_idle      = "#4585FF33"
-# fill_hovered   = "#4585FF8C"
-# stroke_idle    = "#4D99FFB3"
-# stroke_hovered = "#4D99FFFF"
-# label_text     = "#FFFFFFFF"
-# hint_text      = "#CCE6FFE6"  # "Click to capture"
+[freeze_colors.window_frame]
+fill_idle      = "#4585FF33"
+fill_hovered   = "#4585FF8C"
+stroke_idle    = "#4D99FFB3"
+stroke_hovered = "#4D99FFFF"
+label_text     = "#FFFFFFFF"
+hint_text      = "#CCE6FFE6"  # "Click to capture"
 
-# [freeze_colors.monitor_frame]
-# fill_idle      = "#4585FF14"
-# fill_hovered   = "#4585FF66"
-# stroke_idle    = "#4D99FF59"
-# stroke_hovered = "#4D99FFFF"
-# label_text     = "#FFFFFFFF"
-# hint_text      = "#CCE6FFE6"  # "Click to capture"
-# name_text_idle = "#FFFFFF80"  # monitor name when not hovered
+[freeze_colors.monitor_frame]
+fill_idle      = "#4585FF14"
+fill_hovered   = "#4585FF66"
+stroke_idle    = "#4D99FF59"
+stroke_hovered = "#4D99FFFF"
+label_text     = "#FFFFFFFF"
+hint_text      = "#CCE6FFE6"  # "Click to capture"
+name_text_idle = "#FFFFFF80"  # monitor name when not hovered
 
-# [freeze_colors.crop_frame]
-# stroke     = "#FFFFFFFF"
-# label_text = "#FFFFFFFF"      # "W × H" size label
+[freeze_colors.crop_frame]
+stroke     = "#FFFFFFFF"
+label_text = "#FFFFFFFF"      # "W × H" size label
 ```
 
-## License
+</details>
 
-[MIT](./LICENSE)
+<details>
+
+<summary>Matugen Theme Example</summary>
+
+- `~/.config/matugen/config.toml`
+
+```toml
+[templates.hyprcrop]
+input_path = '~/.config/matugen/templates/matugen-hyprcrop.toml'
+output_path = '~/.config/hyprcrop/config.toml'
+```
+
+- `~/.config/matugen/templates/matugen-hyprcrop.toml`
+
+```toml
+save_path = "~/Pictures/Screenshots"
+filename_pattern = "grim-%Y-%m-%d_%H%M_%S"
+toolbar_position = "top"
+capture_window_border = false
+freeze_window_use_toplevel_export = true
+
+[freeze_glyphs]
+crop = "󰆟"
+window = ""
+monitor = "󰍹"
+all = "󰁌"
+cancel = "󰖭"
+
+[notifications]
+enabled = true
+success_action = "swayimg"
+success_timeout = 5000
+success_summary = "Screenshot saved"
+success_body = "{path}"
+error_summary = "Screenshot failed"
+error_body = "{error}"
+
+[freeze_colors.overlay]
+background = "#00000059"
+
+[freeze_colors.toolbar]
+background = "{{ colors.background.default.hex }}D9"
+
+[freeze_colors.button]
+idle_background = "{{ colors.surface.default.hex }}"
+idle_text = "{{ colors.on_surface.default.hex }}"
+active_background = "{{ colors.primary.default.hex }}"
+active_text = "{{ colors.on_primary.default.hex }}"
+hover_background = "{{ colors.tertiary.default.hex }}"
+hover_text = "{{ colors.on_tertiary.default.hex }}"
+
+[freeze_colors.cancel_button]
+idle_background = "{{ colors.error.default.hex }}"
+idle_text = "{{ colors.on_error.default.hex }}"
+hover_background = "#D44A47FF"
+hover_text = "#FFFFFFFF"
+
+[freeze_colors.window_frame]
+fill_idle = "{{ colors.primary_container.default.hex }}33"
+fill_hovered = "{{ colors.primary.default.hex }}8C"
+stroke_idle = "{{ colors.outline.default.hex }}"
+stroke_hovered = "{{ colors.outline.default.hex }}"
+label_text = "{{colors.on_surface.default.hex}}"
+hint_text = "{{ colors.on_surface.default.hex }}E6"
+
+[freeze_colors.monitor_frame]
+fill_idle = "{{ colors.primary_container.default.hex }}33"
+fill_hovered = "{{ colors.primary.default.hex }}8C"
+stroke_idle = "{{ colors.outline.default.hex }}"
+stroke_hovered = "{{ colors.outline.default.hex }}"
+label_text = "{{colors.on_surface.default.hex}}"
+hint_text = "{{ colors.on_surface.default.hex }}E6"
+name_text_idle = "{{ colors.on_surface.default.hex }}80"
+
+[freeze_colors.crop_frame]
+stroke = "{{ colors.primary.default.hex }}"
+label_text = "{{ colors.tertiary.default.hex }}"
+```
+
+</details>
