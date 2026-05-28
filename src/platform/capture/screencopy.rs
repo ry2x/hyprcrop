@@ -1,5 +1,5 @@
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum,
+    Dispatch, QueueHandle, WEnum, delegate_noop,
     protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool},
 };
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
@@ -11,10 +11,7 @@ use crate::domain::error::{AppError, Result};
 use crate::domain::types::{MonitorInfo, ScreenRect};
 use image::{ImageBuffer, Rgba};
 use memmap2::MmapMut;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::sys::memfd;
-use std::os::fd::AsFd;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub struct CaptureState {
     pub shm: Option<wl_shm::WlShm>,
@@ -63,54 +60,11 @@ impl CaptureState {
     }
 }
 
-/// Convert a pixel at byte `offset` in `data` to RGBA based on the shm format.
-///
-/// Wayland shm format memory layout (little-endian):
-/// - ARGB8888: bytes = [Blue, Green, Red, Alpha]  → RGBA uses real alpha
-/// - XRGB8888: bytes = [Blue, Green, Red, X]      → alpha forced to 255
-/// - ABGR8888: bytes = [Red, Green, Blue, Alpha]  → RGBA uses real alpha
-/// - XBGR8888: bytes = [Red, Green, Blue, X]      → alpha forced to 255
-///
-/// Non-panicking: if the buffer is too small, logs a warning and returns transparent black.
-fn read_pixel_rgba(data: &[u8], offset: usize, format: WEnum<wl_shm::Format>) -> Rgba<u8> {
-    // Need 4 bytes (offset..offset+3); checked_add avoids wrapping on 32-bit targets.
-    let ok = offset
-        .checked_add(3)
-        .is_some_and(|max_idx| max_idx < data.len());
-    if !ok {
-        eprintln!(
-            "read_pixel_rgba: offset {offset} out of bounds for buffer length {} (format: {format:?})",
-            data.len()
-        );
-        return Rgba([0, 0, 0, 0]);
-    }
-    let b0 = data[offset];
-    let b1 = data[offset + 1];
-    let b2 = data[offset + 2];
-    let b3 = data[offset + 3];
-    match format {
-        // ARGB8888: [B, G, R, A] → real alpha
-        WEnum::Value(wl_shm::Format::Argb8888) => Rgba([b2, b1, b0, b3]),
-        // XRGB8888: [B, G, R, X] → alpha forced 255 (X channel is padding)
-        WEnum::Value(wl_shm::Format::Xrgb8888) => Rgba([b2, b1, b0, 255]),
-        // ABGR8888: [R, G, B, A] → real alpha
-        WEnum::Value(wl_shm::Format::Abgr8888) => Rgba([b0, b1, b2, b3]),
-        // XBGR8888: [R, G, B, X] → alpha forced 255
-        WEnum::Value(wl_shm::Format::Xbgr8888) => Rgba([b0, b1, b2, 255]),
-        // Defensive fallback: the Buffer event handler whitelists supported formats, so this
-        // branch should never be reached in practice.
-        _ => {
-            eprintln!(
-                "read_pixel_rgba: unsupported wl_shm format {format:?}, falling back to ARGB8888 layout"
-            );
-            Rgba([b2, b1, b0, b3])
-        }
-    }
-}
+use super::wl_shared;
 
 /// Initialize a Wayland connection, discover globals, and resolve xdg-output names.
-fn init_wayland() -> Result<(EventQueue<CaptureState>, CaptureState)> {
-    let conn = Connection::connect_to_env()
+fn init_wayland() -> Result<(wayland_client::EventQueue<CaptureState>, CaptureState)> {
+    let conn = wayland_client::Connection::connect_to_env()
         .map_err(|_| AppError::Wayland("Failed to connect to Wayland".to_string()))?;
     let display = conn.display();
     let mut event_queue = conn.new_event_queue();
@@ -140,56 +94,6 @@ fn init_wayland() -> Result<(EventQueue<CaptureState>, CaptureState)> {
     Ok((event_queue, state))
 }
 
-/// Drive the event queue until `done` returns `true`, or until `timeout` elapses.
-///
-/// Uses `prepare_read` + `poll` so the thread yields to the OS rather than
-/// spinning, and returns an error instead of hanging forever if the compositor
-/// stops responding (e.g. because an output was removed mid-capture).
-fn dispatch_until(
-    event_queue: &mut EventQueue<CaptureState>,
-    state: &mut CaptureState,
-    timeout: Duration,
-    mut done: impl FnMut(&CaptureState) -> bool,
-) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        event_queue
-            .dispatch_pending(state)
-            .map_err(|e| AppError::Wayland(format!("Wayland dispatch failed: {e}")))?;
-
-        if done(state) {
-            return Ok(());
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(AppError::Wayland(
-                "Screencopy timed out: compositor did not respond in time".to_string(),
-            ));
-        }
-
-        event_queue
-            .flush()
-            .map_err(|e| AppError::Wayland(format!("Wayland flush failed: {e}")))?;
-
-        // Prepare a socket read.  Guard and fd are both immutable borrows of event_queue;
-        // they coexist safely since Rust allows multiple &self borrows simultaneously.
-        // Drop pollfds (and its BorrowedFd) before consuming the guard — the borrow checker
-        // requires both immutable borrows to end before the next dispatch_pending(&mut self).
-        let timeout_ms = remaining.as_millis().min(u16::MAX as u128) as u16;
-        let guard = event_queue.prepare_read();
-        {
-            let fd = event_queue.as_fd();
-            let mut pollfds = [PollFd::new(fd, PollFlags::POLLIN)];
-            let _ = poll(&mut pollfds, PollTimeout::from(timeout_ms));
-            // pollfds (and BorrowedFd) dropped here; immutable borrow 2 ends.
-        }
-        if let Some(g) = guard {
-            let _ = g.read(); // consumes guard; immutable borrow 1 ends.
-        }
-    }
-}
-
 // --- Dispatch impls ---
 
 impl Dispatch<wl_registry::WlRegistry, ()> for CaptureState {
@@ -198,7 +102,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for CaptureState {
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
         _: &(),
-        _: &Connection,
+        _: &wayland_client::Connection,
         qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
@@ -251,57 +155,18 @@ impl Dispatch<wl_registry::WlRegistry, ()> for CaptureState {
     }
 }
 
-impl Dispatch<wl_output::WlOutput, ()> for CaptureState {
-    fn event(
-        _: &mut Self,
-        _: &wl_output::WlOutput,
-        _: wl_output::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-impl Dispatch<wl_shm::WlShm, ()> for CaptureState {
-    fn event(
-        _: &mut Self,
-        _: &wl_shm::WlShm,
-        _: wl_shm::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-impl Dispatch<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, ()> for CaptureState {
-    fn event(
-        _: &mut Self,
-        _: &zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
-        _: zwlr_screencopy_manager_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-impl Dispatch<zxdg_output_manager_v1::ZxdgOutputManagerV1, ()> for CaptureState {
-    fn event(
-        _: &mut Self,
-        _: &zxdg_output_manager_v1::ZxdgOutputManagerV1,
-        _: zxdg_output_manager_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(CaptureState: ignore wl_output::WlOutput);
+delegate_noop!(CaptureState: ignore wl_shm::WlShm);
+delegate_noop!(CaptureState: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1);
+delegate_noop!(CaptureState: zxdg_output_manager_v1::ZxdgOutputManagerV1);
+
 impl Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for CaptureState {
     fn event(
         state: &mut Self,
         xdg_output: &zxdg_output_v1::ZxdgOutputV1,
         event: zxdg_output_v1::Event,
         _: &(),
-        _: &Connection,
+        _: &wayland_client::Connection,
         _: &QueueHandle<Self>,
     ) {
         if let zxdg_output_v1::Event::Name { name } = event {
@@ -320,7 +185,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for CaptureSt
         frame: &zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
         event: zwlr_screencopy_frame_v1::Event,
         _: &(),
-        _: &Connection,
+        _: &wayland_client::Connection,
         qh: &QueueHandle<Self>,
     ) {
         let Some(fi_idx) = state.frames.iter().position(|f| &f.frame == frame) else {
@@ -334,7 +199,6 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for CaptureSt
                 height,
                 stride,
             } => {
-                // --- Step 1: format whitelist (earliest rejection) ---
                 // Only 32bpp formats are supported; reject everything else before
                 // allocating any resources to avoid corrupt output downstream.
                 let shm_format = match format {
@@ -352,77 +216,8 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for CaptureSt
                     }
                 };
 
-                // --- Step 2: stride validation ---
-                // stride < width*4 would cause reads past the end of each row;
-                // stride % 4 != 0 would misalign per-pixel offsets.
-                let stride_usize = stride as usize;
-                let width_usize = width as usize;
-                let height_usize = height as usize;
-                let Some(bytes_per_row) = width_usize.checked_mul(4) else {
-                    state.frames[fi_idx].failed = true;
-                    state.frames[fi_idx].error_msg = Some(format!(
-                        "invalid buffer dimensions: width {width} * 4 overflows usize"
-                    ));
-                    return;
-                };
-                if stride_usize < bytes_per_row || !stride_usize.is_multiple_of(4) {
-                    state.frames[fi_idx].failed = true;
-                    state.frames[fi_idx].error_msg = Some(format!(
-                        "invalid compositor stride: stride={stride} width={width} (expected ≥{bytes_per_row} and multiple of 4)"
-                    ));
-                    return;
-                }
-
-                // --- Step 3: buffer size ---
-                // Use checked_mul to detect overflow (very large HiDPI buffers).
-                let Some(size) = stride_usize.checked_mul(height_usize) else {
-                    state.frames[fi_idx].failed = true;
-                    state.frames[fi_idx].error_msg = Some(format!(
-                        "buffer size overflow: stride={stride} * height={height}"
-                    ));
-                    return;
-                };
-                // wl_shm::create_pool takes i32; reject before truncating.
-                let pool_size_i32 = match i32::try_from(size) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        state.frames[fi_idx].failed = true;
-                        state.frames[fi_idx].error_msg = Some(format!(
-                            "shm pool size too large: {size} bytes (max {})",
-                            i32::MAX
-                        ));
-                        return;
-                    }
-                };
-
-                let fd = match memfd::memfd_create(c"screencopy", memfd::MFdFlags::MFD_CLOEXEC) {
-                    Ok(fd) => fd,
-                    Err(e) => {
-                        state.frames[fi_idx].failed = true;
-                        state.frames[fi_idx].error_msg = Some(format!("memfd_create failed: {e}"));
-                        return;
-                    }
-                };
-
-                if let Err(e) = nix::unistd::ftruncate(&fd, size as i64) {
-                    state.frames[fi_idx].failed = true;
-                    state.frames[fi_idx].error_msg = Some(format!("ftruncate failed: {e}"));
-                    return;
-                }
-
-                let file = std::fs::File::from(fd);
-                let mmap = match unsafe { MmapMut::map_mut(&file) } {
-                    Ok(m) => m,
-                    Err(e) => {
-                        state.frames[fi_idx].failed = true;
-                        state.frames[fi_idx].error_msg = Some(format!("mmap failed: {e}"));
-                        return;
-                    }
-                };
-
-                // Borrow shm separately; NLL ends this borrow before the mutable frame update below.
-                let pool = match state.shm.as_ref() {
-                    Some(shm) => shm.create_pool(file.as_fd(), pool_size_i32, qh, ()),
+                let shm = match state.shm.as_ref() {
+                    Some(s) => s.clone(),
                     None => {
                         state.frames[fi_idx].failed = true;
                         state.frames[fi_idx].error_msg =
@@ -431,25 +226,22 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for CaptureSt
                     }
                 };
 
-                let buffer = pool.create_buffer(
-                    0,
-                    width as i32,
-                    height as i32,
-                    stride as i32,
-                    shm_format,
-                    qh,
-                    (),
-                );
-                pool.destroy();
-                frame.copy(&buffer);
-
-                let fi = &mut state.frames[fi_idx];
-                fi.format = Some(WEnum::Value(shm_format));
-                fi.width = width;
-                fi.height = height;
-                fi.stride = stride;
-                fi.buffer = Some(buffer);
-                fi.mmap = Some(mmap);
+                match wl_shared::alloc_shm_buffer(&shm, width, height, stride, shm_format, qh) {
+                    Ok((mmap, buffer)) => {
+                        frame.copy(&buffer);
+                        let fi = &mut state.frames[fi_idx];
+                        fi.format = Some(WEnum::Value(shm_format));
+                        fi.width = width;
+                        fi.height = height;
+                        fi.stride = stride;
+                        fi.buffer = Some(buffer);
+                        fi.mmap = Some(mmap);
+                    }
+                    Err(e) => {
+                        state.frames[fi_idx].failed = true;
+                        state.frames[fi_idx].error_msg = Some(e.to_string());
+                    }
+                }
             }
             zwlr_screencopy_frame_v1::Event::Ready { .. } => {
                 state.frames[fi_idx].ready = true;
@@ -464,28 +256,8 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for CaptureSt
     }
 }
 
-impl Dispatch<wl_shm_pool::WlShmPool, ()> for CaptureState {
-    fn event(
-        _: &mut Self,
-        _: &wl_shm_pool::WlShmPool,
-        _: wl_shm_pool::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-impl Dispatch<wl_buffer::WlBuffer, ()> for CaptureState {
-    fn event(
-        _: &mut Self,
-        _: &wl_buffer::WlBuffer,
-        _: wl_buffer::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(CaptureState: wl_shm_pool::WlShmPool);
+delegate_noop!(CaptureState: ignore wl_buffer::WlBuffer);
 
 // --- Public capture API ---
 
@@ -503,7 +275,7 @@ fn extract_image(fi: &FrameInfo) -> Result<RgbaImage> {
         let row_offset = y as usize * fi.stride as usize;
         for x in 0..fi.width {
             let offset = row_offset + x as usize * 4;
-            img.put_pixel(x, y, read_pixel_rgba(mmap, offset, format));
+            img.put_pixel(x, y, wl_shared::read_pixel_rgba(mmap, offset, format));
         }
     }
     Ok(img)
@@ -562,7 +334,7 @@ where
         }
     }
 
-    dispatch_until(&mut event_queue, &mut state, Duration::from_secs(10), |s| {
+    wl_shared::dispatch_until(&mut event_queue, &mut state, Duration::from_secs(10), |s| {
         s.frames.iter().all(|f| f.ready || f.failed)
     })?;
 
@@ -701,7 +473,7 @@ pub fn capture_all_monitors_with_physical(
                     master_img.put_pixel(
                         offset_x + lx as u32,
                         offset_y + ly as u32,
-                        read_pixel_rgba(mmap, offset, format),
+                        wl_shared::read_pixel_rgba(mmap, offset, format),
                     );
                 }
             }
