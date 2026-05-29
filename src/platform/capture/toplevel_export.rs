@@ -272,30 +272,28 @@ fn attach_and_copy_buffer(
 ) -> Result<()> {
     let qh = event_queue.handle();
 
-    let (width, height, stride, shm_format) = {
-        let fi = state
-            .frame_info
-            .as_mut()
-            .ok_or_else(|| AppError::Wayland("no frame info".to_string()))?;
-        let format = fi.format.ok_or_else(|| {
-            AppError::Wayland("shm format not received before buffer_done".to_string())
-        })?;
-        let WEnum::Value(shm_format) = format else {
-            return Err(AppError::Wayland(
-                "unsupported shm format enum variant".to_string(),
-            ));
-        };
-        (fi.width, fi.height, fi.stride, shm_format)
-    };
-
     let shm = state
         .shm
-        .as_ref()
+        .clone()
         .ok_or_else(|| AppError::Wayland("wl_shm global not available".to_string()))?;
 
-    let (mmap, buffer) = wl_shared::alloc_shm_buffer(shm, width, height, stride, shm_format, &qh)?;
+    let fi = state
+        .frame_info
+        .as_mut()
+        .ok_or_else(|| AppError::Wayland("no frame info".to_string()))?;
 
-    let fi = state.frame_info.as_mut().unwrap();
+    let format = fi.format.ok_or_else(|| {
+        AppError::Wayland("shm format not received before buffer_done".to_string())
+    })?;
+    let WEnum::Value(shm_format) = format else {
+        return Err(AppError::Wayland(
+            "unsupported shm format enum variant".to_string(),
+        ));
+    };
+
+    let (mmap, buffer) =
+        wl_shared::alloc_shm_buffer(&shm, fi.width, fi.height, fi.stride, shm_format, &qh)?;
+
     // ignore_damage = 1: capture current frame immediately without waiting for damage.
     fi.frame.copy(&buffer, 1);
     fi.mmap = Some(mmap);

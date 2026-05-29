@@ -238,8 +238,9 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for CaptureSt
                         fi.mmap = Some(mmap);
                     }
                     Err(e) => {
-                        state.frames[fi_idx].failed = true;
-                        state.frames[fi_idx].error_msg = Some(e.to_string());
+                        let fi = &mut state.frames[fi_idx];
+                        fi.failed = true;
+                        fi.error_msg = Some(e.to_string());
                     }
                 }
             }

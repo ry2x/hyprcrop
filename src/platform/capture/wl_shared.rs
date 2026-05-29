@@ -67,11 +67,13 @@ pub fn dispatch_until<S>(
         {
             let fd = event_queue.as_fd();
             let mut pollfds = [PollFd::new(fd, PollFlags::POLLIN)];
-            let _ = poll(&mut pollfds, PollTimeout::from(timeout_ms));
+            poll(&mut pollfds, PollTimeout::from(timeout_ms))
+                .map_err(|e| AppError::Wayland(format!("poll failed: {e}")))?;
             // pollfds (and BorrowedFd) dropped here
         }
         if let Some(g) = guard {
-            let _ = g.read();
+            g.read()
+                .map_err(|e| AppError::Wayland(format!("Wayland read failed: {e}")))?;
         }
     }
 }
@@ -88,6 +90,7 @@ pub fn dispatch_until<S>(
 ///
 /// Non-panicking: if the buffer is too small, logs a warning and returns
 /// transparent black.
+#[inline]
 pub fn read_pixel_rgba(data: &[u8], offset: usize, format: WEnum<wl_shm::Format>) -> Rgba<u8> {
     // Need 4 bytes (offset..offset+3); checked_add avoids wrapping on 32-bit targets.
     let ok = offset
