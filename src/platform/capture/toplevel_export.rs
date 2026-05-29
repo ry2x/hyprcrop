@@ -10,15 +10,12 @@
 //! The captured image is the raw window surface — no compositor decorations.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use image::ImageBuffer;
 use memmap2::MmapMut;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::sys::memfd;
-use std::os::fd::AsFd;
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum,
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop,
     protocol::{wl_buffer, wl_registry, wl_shm, wl_shm_pool},
 };
 use wayland_protocols_hyprland::toplevel_export::v1::client::{
@@ -28,6 +25,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
 };
 
+use super::wl_shared;
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::WindowInfo;
 
@@ -127,55 +125,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ToplevelExportState {
     }
 }
 
-impl Dispatch<wl_shm::WlShm, ()> for ToplevelExportState {
-    fn event(
-        _: &mut Self,
-        _: &wl_shm::WlShm,
-        _: wl_shm::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wl_shm_pool::WlShmPool, ()> for ToplevelExportState {
-    fn event(
-        _: &mut Self,
-        _: &wl_shm_pool::WlShmPool,
-        _: wl_shm_pool::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wl_buffer::WlBuffer, ()> for ToplevelExportState {
-    fn event(
-        _: &mut Self,
-        _: &wl_buffer::WlBuffer,
-        _: wl_buffer::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<hyprland_toplevel_export_manager_v1::HyprlandToplevelExportManagerV1, ()>
-    for ToplevelExportState
-{
-    fn event(
-        _: &mut Self,
-        _: &hyprland_toplevel_export_manager_v1::HyprlandToplevelExportManagerV1,
-        _: hyprland_toplevel_export_manager_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ToplevelExportState: ignore wl_shm::WlShm);
+delegate_noop!(ToplevelExportState: ignore wl_shm_pool::WlShmPool);
+delegate_noop!(ToplevelExportState: ignore wl_buffer::WlBuffer);
+delegate_noop!(ToplevelExportState: hyprland_toplevel_export_manager_v1::HyprlandToplevelExportManagerV1);
 
 impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()>
     for ToplevelExportState
@@ -311,102 +264,24 @@ impl Dispatch<hyprland_toplevel_export_frame_v1::HyprlandToplevelExportFrameV1, 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn dispatch_until(
-    event_queue: &mut EventQueue<ToplevelExportState>,
-    state: &mut ToplevelExportState,
-    timeout: Duration,
-    mut done: impl FnMut(&ToplevelExportState) -> bool,
-) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        event_queue
-            .dispatch_pending(state)
-            .map_err(|e| AppError::Wayland(format!("Wayland dispatch failed: {e}")))?;
-
-        if done(state) {
-            return Ok(());
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(AppError::Wayland(
-                "Toplevel export timed out: compositor did not respond in time".to_string(),
-            ));
-        }
-
-        event_queue
-            .flush()
-            .map_err(|e| AppError::Wayland(format!("Wayland flush failed: {e}")))?;
-
-        let timeout_ms = remaining.as_millis().min(u16::MAX as u128) as u16;
-        let guard = event_queue.prepare_read();
-        {
-            let fd = event_queue.as_fd();
-            let mut pollfds = [PollFd::new(fd, PollFlags::POLLIN)];
-            poll(&mut pollfds, PollTimeout::from(timeout_ms))
-                .map_err(|e| AppError::Wayland(format!("poll failed: {e}")))?;
-        }
-        if let Some(g) = guard {
-            g.read()
-                .map_err(|e| AppError::Wayland(format!("Wayland read failed: {e}")))?;
-        }
-    }
-}
-
 /// Allocate a wl_shm buffer for `fi` and issue `frame.copy(buffer, ignore_damage=1)`.
 /// Returns an error if the buffer cannot be created.
 fn attach_and_copy_buffer(
     state: &mut ToplevelExportState,
     event_queue: &mut EventQueue<ToplevelExportState>,
 ) -> Result<()> {
+    let qh = event_queue.handle();
+
+    let shm = state
+        .shm
+        .clone()
+        .ok_or_else(|| AppError::Wayland("wl_shm global not available".to_string()))?;
+
     let fi = state
         .frame_info
         .as_mut()
         .ok_or_else(|| AppError::Wayland("no frame info".to_string()))?;
 
-    let stride = fi.stride as usize;
-    let height = fi.height as usize;
-    let width = fi.width as usize;
-
-    let Some(bytes_per_row) = width.checked_mul(4) else {
-        fi.failed = true;
-        return Err(AppError::Wayland(format!(
-            "invalid buffer dimensions: width {} * 4 overflows usize",
-            fi.width
-        )));
-    };
-    if stride < bytes_per_row || !stride.is_multiple_of(4) {
-        fi.failed = true;
-        return Err(AppError::Wayland(format!(
-            "invalid stride: stride={stride} width={} (expected ≥{bytes_per_row} and multiple of 4)",
-            fi.width
-        )));
-    }
-
-    let Some(size) = stride.checked_mul(height) else {
-        fi.failed = true;
-        return Err(AppError::Wayland(format!(
-            "buffer size overflow: stride={stride} * height={}",
-            fi.height
-        )));
-    };
-    let pool_size_i32 = i32::try_from(size).map_err(|_| {
-        AppError::Wayland(format!(
-            "shm pool size too large: {size} bytes (max {})",
-            i32::MAX
-        ))
-    })?;
-
-    let fd = memfd::memfd_create(c"toplevel_export", memfd::MFdFlags::MFD_CLOEXEC)
-        .map_err(|e| AppError::Wayland(format!("memfd_create failed: {e}")))?;
-    nix::unistd::ftruncate(&fd, size as i64)
-        .map_err(|e| AppError::Wayland(format!("ftruncate failed: {e}")))?;
-
-    let file = std::fs::File::from(fd);
-    let mmap = unsafe { MmapMut::map_mut(&file) }
-        .map_err(|e| AppError::Wayland(format!("mmap failed: {e}")))?;
-
-    let qh = event_queue.handle();
     let format = fi.format.ok_or_else(|| {
         AppError::Wayland("shm format not received before buffer_done".to_string())
     })?;
@@ -416,22 +291,8 @@ fn attach_and_copy_buffer(
         ));
     };
 
-    let pool = state
-        .shm
-        .as_ref()
-        .ok_or_else(|| AppError::Wayland("wl_shm global not available".to_string()))?
-        .create_pool(file.as_fd(), pool_size_i32, &qh, ());
-
-    let buffer = pool.create_buffer(
-        0,
-        fi.width as i32,
-        fi.height as i32,
-        fi.stride as i32,
-        shm_format,
-        &qh,
-        (),
-    );
-    pool.destroy();
+    let (mmap, buffer) =
+        wl_shared::alloc_shm_buffer(&shm, fi.width, fi.height, fi.stride, shm_format, &qh)?;
 
     // ignore_damage = 1: capture current frame immediately without waiting for damage.
     fi.frame.copy(&buffer, 1);
@@ -490,7 +351,7 @@ pub fn capture_toplevel_to_path(window: &WindowInfo, out_path: &Path) -> Result<
     // A single roundtrip is not sufficient — the compositor sends each handle's
     // title/app_id/done events in a separate batch after the toplevel is announced.
     // Dispatch until every listed entry has received `done`, or until timeout.
-    dispatch_until(&mut event_queue, &mut state, Duration::from_secs(5), |s| {
+    wl_shared::dispatch_until(&mut event_queue, &mut state, Duration::from_secs(5), |s| {
         !s.toplevels.is_empty() && s.toplevels.iter().all(|e| e.done)
     })?;
 
@@ -535,7 +396,7 @@ pub fn capture_toplevel_to_path(window: &WindowInfo, out_path: &Path) -> Result<
     });
 
     // Phase 1: wait for buffer_done (or early failure)
-    dispatch_until(&mut event_queue, &mut state, Duration::from_secs(10), |s| {
+    wl_shared::dispatch_until(&mut event_queue, &mut state, Duration::from_secs(10), |s| {
         s.frame_info
             .as_ref()
             .is_some_and(|f| f.buffer_done || f.failed)
@@ -557,7 +418,7 @@ pub fn capture_toplevel_to_path(window: &WindowInfo, out_path: &Path) -> Result<
     attach_and_copy_buffer(&mut state, &mut event_queue)?;
 
     // Phase 3: wait for ready or failed
-    dispatch_until(&mut event_queue, &mut state, Duration::from_secs(10), |s| {
+    wl_shared::dispatch_until(&mut event_queue, &mut state, Duration::from_secs(10), |s| {
         s.frame_info.as_ref().is_some_and(|f| f.ready || f.failed)
     })?;
 
@@ -580,43 +441,13 @@ pub fn capture_toplevel_to_path(window: &WindowInfo, out_path: &Path) -> Result<
         .format
         .ok_or_else(|| AppError::Wayland("format not set after successful capture".to_string()))?;
 
-    // Resolve the pixel-channel layout once before the nested loop so the
-    // format match is not repeated for every pixel.
-    let bgr = matches!(
-        format,
-        WEnum::Value(wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888)
-    );
-    let force_opaque = matches!(
-        format,
-        WEnum::Value(wl_shm::Format::Xrgb8888 | wl_shm::Format::Xbgr8888)
-    );
-
     let mut img: ImageBuffer<image::Rgba<u8>, Vec<u8>> = ImageBuffer::new(fi.width, fi.height);
     let stride = fi.stride as usize;
     for y in 0..fi.height {
         let row_offset = y as usize * stride;
         for x in 0..fi.width {
             let offset = row_offset + x as usize * 4;
-            let (r, g, b, a) = if bgr {
-                (
-                    mmap[offset + 2],
-                    mmap[offset + 1],
-                    mmap[offset],
-                    mmap[offset + 3],
-                )
-            } else {
-                (
-                    mmap[offset],
-                    mmap[offset + 1],
-                    mmap[offset + 2],
-                    mmap[offset + 3],
-                )
-            };
-            img.put_pixel(
-                x,
-                y,
-                image::Rgba([r, g, b, if force_opaque { 255 } else { a }]),
-            );
+            img.put_pixel(x, y, wl_shared::read_pixel_rgba(mmap, offset, format));
         }
     }
 

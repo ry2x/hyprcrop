@@ -11,3 +11,4 @@
 pub mod portal;
 pub mod screencopy;
 pub mod toplevel_export;
+pub(crate) mod wl_shared;
