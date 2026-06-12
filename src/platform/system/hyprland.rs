@@ -64,16 +64,15 @@ fn hyprland_socket_path() -> Result<PathBuf> {
 
 pub fn hyprland_ipc_raw(cmd: &str) -> Result<Vec<u8>> {
     let path = hyprland_socket_path()?;
-    let mut stream =
-        UnixStream::connect(&path).map_err(|e| AppError::HyprlandIpc(cmd.to_string(), e))?;
-    write!(stream, "j/{}", cmd).map_err(|e| AppError::HyprlandIpc(cmd.to_string(), e))?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|e| AppError::HyprlandIpc(cmd.to_string(), e))?;
+    let mut stream = UnixStream::connect(&path).map_err(|e| {
+        AppError::HyprlandIpc(format!("{}: connecting to socket", cmd.to_string()), e)
+    })?;
+    write!(stream, "j/{}", cmd)
+        .map_err(|e| AppError::HyprlandIpc(format!("{}: writing to socket", cmd.to_string()), e))?;
     let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
-        .map_err(|e| AppError::HyprlandIpc(cmd.to_string(), e))?;
+    stream.read_to_end(&mut buf).map_err(|e| {
+        AppError::HyprlandIpc(format!("{}: reading from socket", cmd.to_string()), e)
+    })?;
     Ok(buf)
 }
 
