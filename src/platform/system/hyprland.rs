@@ -1,8 +1,10 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
@@ -64,16 +66,47 @@ fn hyprland_socket_path() -> Result<PathBuf> {
 
 pub fn hyprland_ipc_raw(cmd: &str) -> Result<Vec<u8>> {
     let path = hyprland_socket_path()?;
-    let mut stream = UnixStream::connect(&path).map_err(|e| {
-        AppError::HyprlandIpc(format!("{}: connecting to socket", cmd.to_string()), e)
-    })?;
-    write!(stream, "j/{}", cmd)
-        .map_err(|e| AppError::HyprlandIpc(format!("{}: writing to socket", cmd.to_string()), e))?;
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).map_err(|e| {
-        AppError::HyprlandIpc(format!("{}: reading from socket", cmd.to_string()), e)
-    })?;
-    Ok(buf)
+    let mut last_err = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(50 * attempt as u64));
+        }
+        let mut stream = match UnixStream::connect(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                last_err = Some(AppError::HyprlandIpc(
+                    format!("{}: connecting to socket", cmd),
+                    e,
+                ));
+                continue;
+            }
+        };
+        if let Err(e) = stream.write_all(format!("j/{}", cmd).as_bytes()) {
+            last_err = Some(AppError::HyprlandIpc(
+                format!("{}: writing to socket", cmd),
+                e,
+            ));
+            continue;
+        }
+        if let Err(e) = stream.shutdown(Shutdown::Write) {
+            last_err = Some(AppError::HyprlandIpc(
+                format!("{}: shutting down write side", cmd),
+                e,
+            ));
+            continue;
+        }
+        let mut buf = Vec::new();
+        match stream.read_to_end(&mut buf) {
+            Ok(_) => return Ok(buf),
+            Err(e) => {
+                last_err = Some(AppError::HyprlandIpc(
+                    format!("{}: reading from socket", cmd),
+                    e,
+                ));
+            }
+        }
+    }
+    Err(last_err.unwrap())
 }
 
 pub fn hyprland_ipc<T: for<'de> Deserialize<'de>>(cmd: &str) -> Result<T> {
