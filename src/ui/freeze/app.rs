@@ -41,8 +41,8 @@ pub enum FreezeSelection {
 pub enum Message {
     ModeSelected(CaptureMode),
     SelectionConfirmed(ScreenRect),
-    /// Emitted when `use_toplevel_export` is ON and the user clicks a window.
-    /// Carries the full WindowInfo for title+class matching in the v2 protocol.
+    /// Emitted when the user clicks a window in Window mode.
+    /// Carries the full WindowInfo for toplevel-export capture.
     ToplevelWindowSelected(WindowInfo),
     /// Forces a re-render tick on startup to work around wgpu surface
     /// `SurfaceError::Outdated` on first present (shows white until something
@@ -76,9 +76,6 @@ pub struct SelectionCanvas {
     pub border_style: BorderStyle,
     /// User-configured colors for the canvas overlay.
     pub colors: FreezeColors,
-    /// When `true`, window clicks emit `ToplevelWindowSelected` instead of
-    /// `SelectionConfirmed`, triggering the `hyprland-toplevel-export-v1` path.
-    pub use_toplevel_export: bool,
 }
 
 // Canvas-internal mutable state
@@ -173,19 +170,12 @@ impl canvas::Program<Message> for SelectionCanvas {
                             );
                         }
                         Some(HoveredTarget::Window(idx)) => {
-                            if self.use_toplevel_export {
-                                let window = self.windows[idx].clone();
-                                return Some(
-                                    canvas::Action::publish(Message::ToplevelWindowSelected(
-                                        window,
-                                    ))
-                                    .and_capture(),
-                                );
-                            }
-                            let rect = self.windows[idx].rect.expand(self.border_style.border_size);
+                            let window = self.windows[idx].clone();
                             return Some(
-                                canvas::Action::publish(Message::SelectionConfirmed(rect))
-                                    .and_capture(),
+                                canvas::Action::publish(Message::ToplevelWindowSelected(
+                                    window,
+                                ))
+                                .and_capture(),
                             );
                         }
                         None => {}
@@ -330,7 +320,6 @@ pub struct AppStateConfig {
     pub initial_mode: CaptureMode,
     pub colors: FreezeColors,
     pub freeze_buttons: FreezeButtons,
-    pub use_toplevel_export: bool,
 }
 
 pub struct AppState {
@@ -357,7 +346,6 @@ pub struct AppState {
     border_style: BorderStyle,
     colors: FreezeColors,
     freeze_buttons: FreezeButtons,
-    use_toplevel_export: bool,
 }
 
 impl AppState {
@@ -377,7 +365,6 @@ impl AppState {
             border_style: cfg.border_style,
             colors: cfg.colors,
             freeze_buttons: cfg.freeze_buttons,
-            use_toplevel_export: cfg.use_toplevel_export,
         }
     }
 
@@ -437,7 +424,6 @@ impl AppState {
             monitor_offset,
             border_style: self.border_style,
             colors: self.colors,
-            use_toplevel_export: self.use_toplevel_export,
         };
 
         let toolbar = self.toolbar();

@@ -9,7 +9,7 @@ use crate::domain::geometry::{
     clamp_crop, logical_to_physical, monitor_origin, parse_slurp_geometry,
 };
 use crate::domain::types::ScreenRect;
-use crate::platform::capture::screencopy;
+use crate::platform::capture::{screencopy, toplevel_export};
 use crate::platform::system::cmd::CMD_SLURP;
 use crate::platform::system::hyprland;
 
@@ -87,8 +87,32 @@ pub fn capture_crop(cfg: &Config) -> Result<PathBuf> {
 }
 
 pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
-    let info = hyprland::get_active_window()?;
+    let active = hyprland::get_active_window()?;
 
+    // Try toplevel_export first — captures the window buffer directly from the
+    // compositor, so overlapping windows are NOT included in the result.
+    let monitors = hyprland::parse_monitors(hyprland::get_monitors()?);
+    let active_workspace_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
+    let clients = hyprland::get_clients()?;
+    let windows = hyprland::parse_windows(clients, &active_workspace_ids);
+
+    if let Some(win) = windows
+        .iter()
+        .find(|w| w.rect.x == active.at[0] && w.rect.y == active.at[1])
+    {
+        let path = cfg.output_path();
+        match toplevel_export::capture_toplevel_to_path(win, &path) {
+            Ok(()) => return Ok(path),
+            Err(e) => {
+                eprintln!(
+                    "[hyprcrop] toplevel export failed ({}), falling back to screencopy",
+                    e
+                );
+            }
+        }
+    }
+
+    // Fallback: screencopy + crop (includes overlapping windows).
     let border_size = if cfg.capture_window_border {
         hyprland::get_border_style().border_size
     } else {
@@ -96,10 +120,10 @@ pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
     };
 
     let win_rect = ScreenRect {
-        x: info.at[0],
-        y: info.at[1],
-        w: info.size[0],
-        h: info.size[1],
+        x: active.at[0],
+        y: active.at[1],
+        w: active.size[0],
+        h: active.size[1],
     }
     .expand(border_size);
 
@@ -110,7 +134,6 @@ pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
 
     // Identify the monitor that contains the window's top-left corner.
     // Windows spanning multiple monitors are captured from the monitor containing their top-left corner only.
-    let monitors = hyprland::parse_monitors(hyprland::get_monitors()?);
     let mon = monitors
         .iter()
         .find(|m| {

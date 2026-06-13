@@ -64,16 +64,40 @@ fn hyprland_socket_path() -> Result<PathBuf> {
 
 pub fn hyprland_ipc_raw(cmd: &str) -> Result<Vec<u8>> {
     let path = hyprland_socket_path()?;
-    let mut stream = UnixStream::connect(&path).map_err(|e| {
-        AppError::HyprlandIpc(format!("{}: connecting to socket", cmd.to_string()), e)
-    })?;
-    write!(stream, "j/{}", cmd)
-        .map_err(|e| AppError::HyprlandIpc(format!("{}: writing to socket", cmd.to_string()), e))?;
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).map_err(|e| {
-        AppError::HyprlandIpc(format!("{}: reading from socket", cmd.to_string()), e)
-    })?;
-    Ok(buf)
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY_MS: u64 = 200;
+    let mut last_err: Option<(String, std::io::Error)> = None;
+
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+        }
+
+        let mut stream = match UnixStream::connect(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                last_err = Some(("connecting to socket".into(), e));
+                continue;
+            }
+        };
+
+        if let Err(e) = write!(stream, "j/{}", cmd) {
+            last_err = Some(("writing to socket".into(), e));
+            continue;
+        }
+
+        let mut buf = Vec::new();
+        match stream.read_to_end(&mut buf) {
+            Ok(_) => return Ok(buf),
+            Err(e) => {
+                last_err = Some(("reading from socket".into(), e));
+                continue;
+            }
+        }
+    }
+
+    let (ctx, err) = last_err.unwrap();
+    Err(AppError::HyprlandIpc(format!("{}: {}", cmd, ctx), err))
 }
 
 pub fn hyprland_ipc<T: for<'de> Deserialize<'de>>(cmd: &str) -> Result<T> {
