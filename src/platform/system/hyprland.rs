@@ -98,7 +98,15 @@ pub fn hyprland_ipc_raw(cmd: &str) -> Result<Vec<u8>> {
         }
     }
 
-    let (ctx, err) = last_err.unwrap();
+    let (ctx, err) = last_err.unwrap_or_else(|| {
+        (
+            "unknown socket error".into(),
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "IPC loop terminated without errors",
+            ),
+        )
+    });
     Err(AppError::HyprlandIpc(format!("{}: {}", cmd, ctx), err))
 }
 
