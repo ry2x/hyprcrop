@@ -89,27 +89,30 @@ pub fn capture_crop(cfg: &Config) -> Result<PathBuf> {
 pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
     let active = hyprland::get_active_window()?;
 
-    // Try toplevel_export first — captures the window buffer directly from the
-    // compositor, so overlapping windows are NOT included in the result.
     let monitors = hyprland::parse_monitors(hyprland::get_monitors()?);
-    let active_workspace_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
-    let clients = hyprland::get_clients()?;
-    let windows = hyprland::parse_windows(clients, &active_workspace_ids);
 
-    if let Some(win) = windows.iter().find(|w| {
-        w.rect.x == active.at[0]
-            && w.rect.y == active.at[1]
-            && w.rect.w == active.size[0]
-            && w.rect.h == active.size[1]
-    }) {
-        let path = cfg.output_path();
-        match toplevel_export::capture_toplevel_to_path(win, &path) {
-            Ok(()) => return Ok(path),
-            Err(e) => {
-                eprintln!(
-                    "[hyprcrop] toplevel export failed ({}), falling back to screencopy",
-                    e
-                );
+    if cfg.freeze_window_use_toplevel_export {
+        // Try toplevel_export first — captures the window buffer directly from the
+        // compositor, so overlapping windows are NOT included in the result.
+        let active_workspace_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
+        let clients = hyprland::get_clients()?;
+        let windows = hyprland::parse_windows(clients, &active_workspace_ids);
+
+        if let Some(win) = windows.iter().find(|w| {
+            w.rect.x == active.at[0]
+                && w.rect.y == active.at[1]
+                && w.rect.w == active.size[0]
+                && w.rect.h == active.size[1]
+        }) {
+            let path = cfg.output_path();
+            match toplevel_export::capture_toplevel_to_path(win, &path) {
+                Ok(()) => return Ok(path),
+                Err(e) => {
+                    eprintln!(
+                        "[hyprcrop] toplevel export failed ({}), falling back to screencopy",
+                        e
+                    );
+                }
             }
         }
     }
