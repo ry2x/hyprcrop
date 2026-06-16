@@ -161,11 +161,12 @@ toolbar_position = "top"
 # Default: false
 capture_window_border = false
 
-# When `true`, freeze-mode window capture uses `hyprland-toplevel-export-v1` to
-# directly capture the window surface instead of cropping from the frozen monitor
-# image. Incompatible with `capture_window_border`; that option is forced `false` when this is enabled.
+# When `true`, freeze-mode window capture and `hyprcrop window` capture
+# uses `hyprland-toplevel-export-v1` to directly capture
+# the window surface instead of cropping from the frozen monitor image.
+# Incompatible with `capture_window_border`; that option is forced `false` when this is enabled.
 # Default: false
-freeze_window_use_toplevel_export = false
+window_use_toplevel_export = false
 
 # Glyphs shown in the freeze mode toolbar.
 # Requires a Nerd Font. Override individual icons as needed.
@@ -204,7 +205,7 @@ error_body       = "{error}"
 # Every key is optional; omitted keys fall back to the built-in defaults shown below.
 
 [freeze_colors.overlay]
-background = "#00000059"     # dim over frozen screen
+background = "#00000059"  # dim over frozen screen
 
 [freeze_colors.toolbar]
 background = "#141414D9"  # toolbar pill background
@@ -228,7 +229,7 @@ fill_idle      = "#4585FF33"
 fill_hovered   = "#4585FF8C"
 stroke_idle    = "#4D99FFB3"
 stroke_hovered = "#4D99FFFF"
-label_text     = "#FFFFFFFF"
+label_text     = "#FFFFFFFF"  # "window title" label
 hint_text      = "#CCE6FFE6"  # "Click to capture"
 
 [freeze_colors.monitor_frame]
@@ -236,7 +237,7 @@ fill_idle      = "#4585FF14"
 fill_hovered   = "#4585FF66"
 stroke_idle    = "#4D99FF59"
 stroke_hovered = "#4D99FFFF"
-label_text     = "#FFFFFFFF"
+label_text     = "#FFFFFFFF"  # "monitor name" label eg, "DP-1"
 hint_text      = "#CCE6FFE6"  # "Click to capture"
 name_text_idle = "#FFFFFF80"  # monitor name when not hovered
 
@@ -266,7 +267,7 @@ save_path = "~/Pictures/Screenshots"
 filename_pattern = "grim-%Y-%m-%d_%H%M_%S"
 toolbar_position = "top"
 capture_window_border = false
-freeze_window_use_toplevel_export = true
+window_use_toplevel_export = true
 
 [freeze_glyphs]
 crop = "󰆟"
