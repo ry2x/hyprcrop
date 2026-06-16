@@ -172,10 +172,8 @@ impl canvas::Program<Message> for SelectionCanvas {
                         Some(HoveredTarget::Window(idx)) => {
                             let window = self.windows[idx].clone();
                             return Some(
-                                canvas::Action::publish(Message::ToplevelWindowSelected(
-                                    window,
-                                ))
-                                .and_capture(),
+                                canvas::Action::publish(Message::ToplevelWindowSelected(window))
+                                    .and_capture(),
                             );
                         }
                         None => {}
