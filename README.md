@@ -137,14 +137,14 @@ hyprcrop --config ~/my-config.toml generate-config
 
 ### Example configs
 
-<details>
-
-<summary>Example Config with Descriptions</summary>
-
 > [!WARNING]
 > `freeze_window_use_toplevel_export` has been renamed to `window_use_toplevel_export`.
 > If you have an existing config with the old key, you will be warned about deprecated keys when the config is loaded.
 > Update your config by replacing `freeze_window_use_toplevel_export` with `window_use_toplevel_export` to remove the warning.
+
+<details>
+
+<summary>Example Config with Descriptions</summary>
 
 ```toml
 # Directory where screenshots are saved.
