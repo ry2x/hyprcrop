@@ -211,7 +211,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
         Some(Some(FreezeSelection::ToplevelWindow(window))) => {
             let mut captured = false;
 
-            if cfg.freeze_window_use_toplevel_export {
+            if cfg.window_use_toplevel_export {
                 // Try toplevel-export first — captures the raw window buffer without
                 // overlapping windows.
                 if let Err(e) = toplevel_export::capture_toplevel_to_path(&window, &out_path) {
