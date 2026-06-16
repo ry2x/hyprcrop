@@ -35,19 +35,13 @@ use crate::platform::capture::toplevel_export;
 use crate::platform::system::hyprland::{self};
 
 pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
+    // Fetch Hyprland data in parallel threads for speed.
+    // At most 3 concurrent connections (monitors, clients, layers) — well within
+    // Hyprland's IPC capacity. Border style is fetched after joining to avoid
+    // saturating the socket with 5 simultaneous connections (which caused BrokenPipe).
     let monitors_t = std::thread::spawn(hyprland::get_monitors);
     let clients_t = std::thread::spawn(hyprland::get_clients);
     let layers_t = std::thread::spawn(hyprland::get_overlay_layers);
-    // Border expansion is irrelevant when toplevel-export is used (the protocol
-    // captures the raw window surface, no compositor decorations). Suppress it here
-    // rather than mutating the global config flag, so non-freeze commands are unaffected.
-    let border_style = if cfg.capture_window_border && !cfg.freeze_window_use_toplevel_export {
-        hyprland::get_border_style()
-    } else {
-        BorderStyle::default()
-    };
-    let initial_mode =
-        resolve_initial_mode(&cfg.freeze_buttons, crate::domain::state::load_last_mode());
 
     let monitors_raw = monitors_t
         .join()
@@ -65,6 +59,17 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
             eprintln!("[hyprcrop] warning: failed to fetch overlay layers: {e}");
             Vec::new()
         });
+
+    // Border expansion is irrelevant when toplevel-export is used (the protocol
+    // captures the raw window surface, no compositor decorations). Suppress it here
+    // rather than mutating the global config flag, so non-freeze commands are unaffected.
+    let border_style = if cfg.capture_window_border {
+        hyprland::get_border_style()
+    } else {
+        BorderStyle::default()
+    };
+    let initial_mode =
+        resolve_initial_mode(&cfg.freeze_buttons, crate::domain::state::load_last_mode());
 
     let monitors = hyprland::parse_monitors(monitors_raw);
     let active_ws_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
@@ -130,7 +135,6 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
         let toolbar_position = cfg.toolbar_position;
         let colors = cfg.freeze_colors;
         let freeze_buttons = cfg.freeze_buttons;
-        let use_toplevel_export = cfg.freeze_window_use_toplevel_export;
 
         iced_layershell::daemon(
             move || {
@@ -158,7 +162,6 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                     initial_mode,
                     colors,
                     freeze_buttons,
-                    use_toplevel_export,
                 });
                 (state, Task::batch(spawn_tasks))
             },
@@ -206,7 +209,32 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
             Ok(out_path)
         }
         Some(Some(FreezeSelection::ToplevelWindow(window))) => {
-            toplevel_export::capture_toplevel_to_path(&window, &out_path)?;
+            let mut captured = false;
+
+            if cfg.freeze_window_use_toplevel_export {
+                // Try toplevel-export first — captures the raw window buffer without
+                // overlapping windows.
+                if let Err(e) = toplevel_export::capture_toplevel_to_path(&window, &out_path) {
+                    eprintln!(
+                        "[hyprcrop] toplevel export failed ({}), falling back to screencopy crop",
+                        e
+                    );
+                } else {
+                    captured = true;
+                }
+            }
+
+            if !captured {
+                // Fall back to cropping the frozen screenshot.
+                let adjusted = ScreenRect {
+                    x: window.rect.x - min_x,
+                    y: window.rect.y - min_y,
+                    w: window.rect.w,
+                    h: window.rect.h,
+                }
+                .expand(border_style.border_size);
+                screencopy::crop_and_save(full_rgba, Some(adjusted), &out_path)?;
+            }
             Ok(out_path)
         }
     }

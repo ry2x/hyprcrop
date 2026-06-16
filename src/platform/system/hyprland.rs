@@ -1,10 +1,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
@@ -66,47 +64,47 @@ fn hyprland_socket_path() -> Result<PathBuf> {
 
 pub fn hyprland_ipc_raw(cmd: &str) -> Result<Vec<u8>> {
     let path = hyprland_socket_path()?;
-    let mut last_err = None;
-    for attempt in 0..3 {
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY_MS: u64 = 200;
+    let mut last_err: Option<(String, std::io::Error)> = None;
+
+    for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(50 * attempt as u64));
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
         }
+
         let mut stream = match UnixStream::connect(&path) {
             Ok(s) => s,
             Err(e) => {
-                last_err = Some(AppError::HyprlandIpc(
-                    format!("{}: connecting to socket", cmd),
-                    e,
-                ));
+                last_err = Some(("connecting to socket".into(), e));
                 continue;
             }
         };
-        if let Err(e) = stream.write_all(format!("j/{}", cmd).as_bytes()) {
-            last_err = Some(AppError::HyprlandIpc(
-                format!("{}: writing to socket", cmd),
-                e,
-            ));
+
+        if let Err(e) = write!(stream, "j/{}", cmd) {
+            last_err = Some(("writing to socket".into(), e));
             continue;
         }
-        if let Err(e) = stream.shutdown(Shutdown::Write) {
-            last_err = Some(AppError::HyprlandIpc(
-                format!("{}: shutting down write side", cmd),
-                e,
-            ));
-            continue;
-        }
+
         let mut buf = Vec::new();
         match stream.read_to_end(&mut buf) {
             Ok(_) => return Ok(buf),
             Err(e) => {
-                last_err = Some(AppError::HyprlandIpc(
-                    format!("{}: reading from socket", cmd),
-                    e,
-                ));
+                last_err = Some(("reading from socket".into(), e));
+                continue;
             }
         }
     }
-    Err(last_err.unwrap())
+
+    let (ctx, err) = last_err.unwrap_or_else(|| {
+        (
+            "unknown socket error".into(),
+            std::io::Error::other(
+                "IPC loop terminated without errors",
+            ),
+        )
+    });
+    Err(AppError::HyprlandIpc(format!("{}: {}", cmd, ctx), err))
 }
 
 pub fn hyprland_ipc<T: for<'de> Deserialize<'de>>(cmd: &str) -> Result<T> {
