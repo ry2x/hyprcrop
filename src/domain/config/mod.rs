@@ -36,7 +36,7 @@ fn default_capture_window_border() -> bool {
     false
 }
 
-fn default_freeze_window_use_toplevel_export() -> bool {
+fn default_window_use_toplevel_export() -> bool {
     false
 }
 
@@ -85,12 +85,19 @@ pub struct Config {
     #[serde(default)]
     pub freeze_buttons: FreezeButtons,
 
-    /// When `true`, freeze-mode window capture uses `hyprland-toplevel-export-v1` to
-    /// directly capture the window surface instead of cropping from the frozen monitor
-    /// image. Incompatible with `capture_window_border`; that option is forced `false`
-    /// when this is enabled.
-    #[serde(default = "default_freeze_window_use_toplevel_export")]
-    pub freeze_window_use_toplevel_export: bool,
+    /// When `true`, freeze-mode window capture and `hyprcrop window` capture
+    /// uses `hyprland-toplevel-export-v1` to directly capture
+    /// the window surface instead of cropping from the frozen monitor image.
+    /// Incompatible with `capture_window_border`; that option is forced `false` when this is enabled.
+    #[serde(default = "default_window_use_toplevel_export")]
+    pub window_use_toplevel_export: bool,
+
+    /// Deprecated alias for `window_use_toplevel_export`.
+    /// If `freeze_window_use_toplevel_export` is `true`, it forces `window_use_toplevel_export` to `true`
+    /// for backward compatibility with older config files and emits a warning.
+    /// This field is deprecated and should not be used in new config files. Next major version will remove this field and the associated compatibility logic.
+    #[serde(default)]
+    pub freeze_window_use_toplevel_export: bool, // Deprecated alias for `window_use_toplevel_export`.
 }
 
 impl Default for Config {
@@ -104,7 +111,8 @@ impl Default for Config {
             notifications: Notifications::default(),
             freeze_colors: FreezeColors::default(),
             freeze_buttons: FreezeButtons::default(),
-            freeze_window_use_toplevel_export: default_freeze_window_use_toplevel_export(),
+            window_use_toplevel_export: default_window_use_toplevel_export(),
+            freeze_window_use_toplevel_export: default_window_use_toplevel_export(), // Deprecated alias for `window_use_toplevel_export`.
         }
     }
 }
@@ -129,7 +137,23 @@ impl Config {
         } else {
             let raw = fs::read_to_string(path)
                 .map_err(|e| AppError::FileSystem(path.to_path_buf(), e))?;
-            toml::from_str(&raw)?
+            let mut parsed: Config = toml::from_str(&raw)?;
+
+            if let Ok(toml::Value::Table(table)) = toml::from_str::<toml::Value>(&raw)
+                && table.contains_key("freeze_window_use_toplevel_export")
+            {
+                println!(
+                    "[hyprcrop] warning: 'freeze_window_use_toplevel_export' is deprecated and will be removed in a future version. Please use 'window_use_toplevel_export' instead."
+                );
+                if !table.contains_key("window_use_toplevel_export")
+                    && let Some(toml::Value::Boolean(b)) =
+                        table.get("freeze_window_use_toplevel_export")
+                {
+                    parsed.window_use_toplevel_export = *b;
+                }
+            }
+
+            parsed
         };
 
         cfg.save_path = expand_tilde(&cfg.save_path);
@@ -392,38 +416,52 @@ cancel  = "E"
         assert_eq!(parsed.freeze_buttons.all, original.freeze_buttons.all);
         assert_eq!(parsed.freeze_buttons.cancel, original.freeze_buttons.cancel);
         assert_eq!(
-            parsed.freeze_window_use_toplevel_export,
-            original.freeze_window_use_toplevel_export
+            parsed.window_use_toplevel_export,
+            original.window_use_toplevel_export
         );
     }
 
     #[test]
-    fn test_freeze_window_use_toplevel_export_default_false() {
-        assert!(!Config::default().freeze_window_use_toplevel_export);
+    fn test_window_use_toplevel_export_default_false() {
+        assert!(!Config::default().window_use_toplevel_export);
         let cfg: Config = toml::from_str("").unwrap();
-        assert!(!cfg.freeze_window_use_toplevel_export);
+        assert!(!cfg.window_use_toplevel_export);
+    }
+
+    #[test]
+    fn test_freeze_window_use_toplevel_export_fallback() {
+        let f = write_toml("freeze_window_use_toplevel_export = true");
+        let cfg = Config::load_from(f.path()).expect("load");
+        assert!(cfg.window_use_toplevel_export);
+    }
+
+    #[test]
+    fn test_freeze_window_use_toplevel_export_no_fallback_when_window_export_exists() {
+        let f = write_toml(
+            "freeze_window_use_toplevel_export = true\nwindow_use_toplevel_export = false",
+        );
+        let cfg = Config::load_from(f.path()).expect("load");
+        assert!(!cfg.window_use_toplevel_export);
     }
 
     #[test]
     fn test_capture_window_border_independent_of_toplevel_export() {
         // Both flags are independent; load_from must not mutate one based on the other.
-        let f =
-            write_toml("capture_window_border = true\nfreeze_window_use_toplevel_export = true");
+        let f = write_toml("capture_window_border = true\nwindow_use_toplevel_export = true");
         let cfg = Config::load_from(f.path()).expect("load");
-        assert!(cfg.freeze_window_use_toplevel_export);
+        assert!(cfg.window_use_toplevel_export);
         assert!(
             cfg.capture_window_border,
-            "capture_window_border must not be mutated by load_from when freeze_window_use_toplevel_export is true"
+            "capture_window_border must not be mutated by load_from when window_use_toplevel_export is true"
         );
     }
 
     #[test]
     fn test_capture_window_border_unaffected_when_toplevel_export_off() {
-        let f =
-            write_toml("capture_window_border = true\nfreeze_window_use_toplevel_export = false");
+        let f = write_toml("capture_window_border = true\nwindow_use_toplevel_export = false");
         let cfg = Config::load_from(f.path()).expect("load");
         assert!(cfg.capture_window_border);
-        assert!(!cfg.freeze_window_use_toplevel_export);
+        assert!(!cfg.window_use_toplevel_export);
     }
 
     #[test]
