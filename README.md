@@ -143,7 +143,7 @@ hyprcrop --config ~/my-config.toml generate-config
 
 > [!WARNING]
 > `freeze_window_use_toplevel_export` has been renamed to `window_use_toplevel_export`.
-> If you have an existing config with the old key, you will be warned about deprecated keys on end.
+> If you have an existing config with the old key, you will be warned about deprecated keys when the config is loaded.
 > Update your config by replacing `freeze_window_use_toplevel_export` with `window_use_toplevel_export` to remove the warning.
 
 ```toml
@@ -167,9 +167,9 @@ toolbar_position = "top"
 capture_window_border = false
 
 # When `true`, freeze-mode window capture and `hyprcrop window` capture
-# uses `hyprland-toplevel-export-v1` to directly capture
+# use `hyprland-toplevel-export-v1` to directly capture
 # the window surface instead of cropping from the frozen monitor image.
-# Incompatible with `capture_window_border`; that option is forced `false` when this is enabled.
+# `capture_window_border` has no effect when toplevel export succeeds.
 # Default: false
 window_use_toplevel_export = false
 
