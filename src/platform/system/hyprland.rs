@@ -1,10 +1,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
@@ -101,8 +99,7 @@ pub fn hyprland_ipc_raw(cmd: &str) -> Result<Vec<u8>> {
     let (ctx, err) = last_err.unwrap_or_else(|| {
         (
             "unknown socket error".into(),
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
+            std::io::Error::other(
                 "IPC loop terminated without errors",
             ),
         )
