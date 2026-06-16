@@ -86,9 +86,9 @@ pub struct Config {
     pub freeze_buttons: FreezeButtons,
 
     /// When `true`, freeze-mode window capture and `hyprcrop window` capture
-    /// uses `hyprland-toplevel-export-v1` to directly capture
+    /// use `hyprland-toplevel-export-v1` to directly capture
     /// the window surface instead of cropping from the frozen monitor image.
-    /// Incompatible with `capture_window_border`; that option is forced `false` when this is enabled.
+    /// `capture_window_border` has no effect when toplevel export succeeds.
     #[serde(default = "default_window_use_toplevel_export")]
     pub window_use_toplevel_export: bool,
 
@@ -96,7 +96,7 @@ pub struct Config {
     /// If `freeze_window_use_toplevel_export` is `true`, it forces `window_use_toplevel_export` to `true`
     /// for backward compatibility with older config files and emits a warning.
     /// This field is deprecated and should not be used in new config files. Next major version will remove this field and the associated compatibility logic.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub freeze_window_use_toplevel_export: bool, // Deprecated alias for `window_use_toplevel_export`.
 }
 
@@ -142,7 +142,7 @@ impl Config {
             if let Ok(toml::Value::Table(table)) = toml::from_str::<toml::Value>(&raw)
                 && table.contains_key("freeze_window_use_toplevel_export")
             {
-                println!(
+                eprintln!(
                     "[hyprcrop] warning: 'freeze_window_use_toplevel_export' is deprecated and will be removed in a future version. Please use 'window_use_toplevel_export' instead."
                 );
                 if !table.contains_key("window_use_toplevel_export")
