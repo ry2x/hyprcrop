@@ -302,7 +302,7 @@ mod tests {
                 "levels": {
                     "0": [{"x":0,"y":1050,"w":1920,"h":30,"namespace":"waybar-bottom"}],
                     "3": [
-                        {"x":0,"y":0,"w":1920,"h":30,"namespace":"waybar"},
+                        {"x":0,"y":0,"w":1920,"h":30,"namespace":"waybar"}
                     ]
                 }
             },
