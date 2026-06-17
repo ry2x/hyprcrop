@@ -10,6 +10,7 @@
 //! | Module | Contents |
 //! |---|---|
 //! | [`config`] | TOML configuration schema, loading, and default values |
+//! | [`constants`] | Application-wide constants for the domain layer |
 //! | [`error`] | Application-wide error type `AppError` and `Result<T>` alias |
 //! | [`geometry`] | Coordinate calculations (slurp string parsing, logical-to-physical conversion, clamping) |
 //! | [`state`] | Persists the last-used capture mode for freeze mode across sessions |
