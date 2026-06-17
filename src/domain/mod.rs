@@ -16,6 +16,7 @@
 //! | [`types`] | Shared data structures: `ScreenRect`, `MonitorInfo`, `WindowInfo`, etc. |
 
 pub mod config;
+pub mod constants;
 pub mod error;
 pub mod geometry;
 pub mod state;
