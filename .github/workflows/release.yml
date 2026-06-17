@@ -1,41 +1,41 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+    push:
+        tags:
+            - "v*"
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    build-and-release:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
-        with:
-          toolchain: stable
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+              with:
+                  toolchain: stable
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libpipewire-0.3-dev libdbus-1-dev pkg-config clang libclang-dev llvm-dev
+            - name: Install dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libwayland-dev libpipewire-0.3-dev libdbus-1-dev pkg-config clang libclang-dev llvm-dev
 
-      - name: Set libclang path
-        run: echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
+            - name: Set libclang path
+              run: echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
 
-      - name: Build release
-        env:
-          CARGO_PROFILE_RELEASE_LTO: thin
-        run: cargo build --release --locked
+            - name: Build release
+              env:
+                  CARGO_PROFILE_RELEASE_LTO: false
+              run: cargo build --release --locked
 
-      - name: Upload Binary to Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
-        with:
-          files: target/release/hyprcrop
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - name: Upload Binary to Release
+              uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+              with:
+                  files: target/release/hyprcrop
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
