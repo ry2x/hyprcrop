@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
 
+pub const FREEZE_LAYER_NAMESPACE: &str = "hyprcrop-freeze";
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct HyprMonitor {
@@ -177,7 +179,7 @@ pub(crate) fn parse_overlay_layers(
                 .into_iter()
                 .filter(|(level, _)| level == OVERLAY_LEVEL)
                 .flat_map(|(_, surfaces)| surfaces)
-                .filter(|s| s.namespace != crate::ui::freeze::FREEZE_LAYER_NAMESPACE)
+                .filter(|s| s.namespace != FREEZE_LAYER_NAMESPACE)
                 .map(|s| LayerSurface {
                     rect: ScreenRect {
                         x: s.x,
@@ -300,13 +302,17 @@ mod tests {
             "DP-2": {
                 "levels": {
                     "0": [{"x":0,"y":1050,"w":1920,"h":30,"namespace":"waybar-bottom"}],
-                    "3": [{"x":0,"y":0,"w":1920,"h":30,"namespace":"waybar"}]
+                    "3": [
+                        {"x":0,"y":0,"w":1920,"h":30,"namespace":"waybar"},
+                        {"x":1920,"y":0,"w":1920,"h":1080,"namespace":"hyprcrop-freeze"}
+                    ]
                 }
             },
             "DP-1": {
                 "levels": {
                     "3": [
                         {"x":1920,"y":0,"w":2560,"h":40,"namespace":"waybar"},
+                        {"x":1920,"y":0,"w":2560,"h":1920,"namespace":"hyprcrop-freeze"},
                         {"x":0,"y":0,"w":0,"h":0,"namespace":"zero-size"}
                     ]
                 }
