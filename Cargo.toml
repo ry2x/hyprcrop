@@ -1,6 +1,6 @@
 [package]
 name = "hyprcrop"
-version = "0.5.5-alpha"
+version = "0.5.6"
 edition = "2024"
 authors = ["ry2x"]
 description = "A fast, Hyprland-native screenshot tool written in Rust."
@@ -64,6 +64,7 @@ opt-level = 3
 lto = true
 panic = "abort"
 strip = "symbols"
+debug = false
 
 [profile.dev]
 opt-level = 1
