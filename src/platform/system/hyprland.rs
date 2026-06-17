@@ -177,6 +177,7 @@ pub(crate) fn parse_overlay_layers(
                 .into_iter()
                 .filter(|(level, _)| level == OVERLAY_LEVEL)
                 .flat_map(|(_, surfaces)| surfaces)
+                .filter(|s| s.namespace != crate::ui::freeze::FREEZE_LAYER_NAMESPACE)
                 .map(|s| LayerSurface {
                     rect: ScreenRect {
                         x: s.x,
