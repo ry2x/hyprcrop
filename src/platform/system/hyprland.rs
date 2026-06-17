@@ -4,10 +4,9 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
+use crate::domain::constants::FREEZE_LAYER_NAMESPACE;
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
-
-pub const FREEZE_LAYER_NAMESPACE: &str = "hyprcrop-freeze";
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -304,7 +303,6 @@ mod tests {
                     "0": [{"x":0,"y":1050,"w":1920,"h":30,"namespace":"waybar-bottom"}],
                     "3": [
                         {"x":0,"y":0,"w":1920,"h":30,"namespace":"waybar"},
-                        {"x":1920,"y":0,"w":1920,"h":1080,"namespace":"hyprcrop-freeze"}
                     ]
                 }
             },
@@ -312,7 +310,6 @@ mod tests {
                 "levels": {
                     "3": [
                         {"x":1920,"y":0,"w":2560,"h":40,"namespace":"waybar"},
-                        {"x":1920,"y":0,"w":2560,"h":1920,"namespace":"hyprcrop-freeze"},
                         {"x":0,"y":0,"w":0,"h":0,"namespace":"zero-size"}
                     ]
                 }
@@ -330,6 +327,31 @@ mod tests {
         assert_eq!(surfaces[1].namespace, "waybar");
         assert_eq!(surfaces[1].rect.x, 1920);
         assert_eq!(surfaces[1].rect.w, 2560);
+    }
+
+    #[test]
+    fn test_overlay_layer_parsing_with_freeze_layer() {
+        let json = format!(
+            r#"{{
+            "DP-1": {{
+                "levels": {{
+                    "3": [
+                        {{"x":0,"y":0,"w":1920,"h":40,"namespace":"waybar"}},
+                        {{"x":0,"y":40,"w":1920,"h":40,"namespace":"{}"}}
+                    ]
+                }}
+            }}
+        }}"#,
+            FREEZE_LAYER_NAMESPACE
+        );
+        let monitors: HashMap<String, HyprLayerMonitor> = serde_json::from_str(&json).unwrap();
+        let surfaces = parse_overlay_layers(monitors);
+
+        // hyprcrop-freeze surface must be filtered out
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(surfaces[0].namespace, "waybar");
+        assert_eq!(surfaces[0].rect.x, 0);
+        assert_eq!(surfaces[0].rect.w, 1920);
     }
 
     #[test]

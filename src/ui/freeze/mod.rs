@@ -28,6 +28,7 @@ use std::{
 };
 
 use crate::domain::config::Config;
+use crate::domain::constants::FREEZE_LAYER_NAMESPACE;
 use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, ScreenRect};
 use crate::platform::capture::screencopy;
@@ -119,7 +120,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                     exclusive_zone: Some(-1),
                     keyboard_interactivity: KeyboardInteractivity::Exclusive,
                     output_option: OutputOption::OutputName(m.name.clone()),
-                    namespace: Some(hyprland::FREEZE_LAYER_NAMESPACE.to_owned()),
+                    namespace: Some(FREEZE_LAYER_NAMESPACE.to_owned()),
                     ..Default::default()
                 };
                 (id, settings)
@@ -165,7 +166,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                 });
                 (state, Task::batch(spawn_tasks))
             },
-            hyprland::FREEZE_LAYER_NAMESPACE,
+            FREEZE_LAYER_NAMESPACE,
             app_update,
             app_view,
         )
