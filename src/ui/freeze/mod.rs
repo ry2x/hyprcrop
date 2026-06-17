@@ -12,8 +12,6 @@ mod app;
 
 pub use app::CaptureMode;
 
-pub const FREEZE_LAYER_NAMESPACE: &str = "hyprcrop-freeze";
-
 use app::{
     AppState, AppStateConfig, FreezeSelection, Message, app_subscription, app_update, app_view,
 };
@@ -121,7 +119,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                     exclusive_zone: Some(-1),
                     keyboard_interactivity: KeyboardInteractivity::Exclusive,
                     output_option: OutputOption::OutputName(m.name.clone()),
-                    namespace: Some(FREEZE_LAYER_NAMESPACE.to_string()),
+                    namespace: Some(hyprland::FREEZE_LAYER_NAMESPACE.to_owned()),
                     ..Default::default()
                 };
                 (id, settings)
@@ -167,7 +165,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                 });
                 (state, Task::batch(spawn_tasks))
             },
-            FREEZE_LAYER_NAMESPACE,
+            hyprland::FREEZE_LAYER_NAMESPACE,
             app_update,
             app_view,
         )
