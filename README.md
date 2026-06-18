@@ -5,6 +5,16 @@
 A fast, Hyprland-native screenshot tool written in Rust.
 HyprCrop is not a wrapper of grim; it captures the screen directly via wayland APIs!
 
+## Roadmap
+
+After the v0.5.6 release, the following features are planned:
+
+- [ ] Delete `portal` subcommand.
+- [ ] Add a `window <address>` subcommand to capture a specific window by its address (e.g., `hyprcrop window 0x123456`).
+
+These updates will remove the need for heavy dependencies such as `tokio`, resulting in faster build times.
+After these changes, I will release as v1.0.0, marking the first stable release of HyprCrop!
+
 ## Features
 
 - **Immediate capture** — crop region, active window, focused monitor, or all monitors
