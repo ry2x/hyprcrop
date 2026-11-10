@@ -1,7 +1,10 @@
 use std::{
+    cell::Cell,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+
+use super::{FontStatus, FontWarmup};
 
 use iced::{
     ContentFit, Element, Length, Point, Rectangle, Subscription, Task, Theme,
@@ -76,6 +79,9 @@ pub struct SelectionCanvas {
     pub border_style: BorderStyle,
     /// User-configured colors for the canvas overlay.
     pub colors: FreezeColors,
+    /// Whether iced's font database is ready. Text is omitted until it is, so
+    /// the first frozen frame is not blocked on the font scan.
+    pub text_ready: bool,
 }
 
 // Canvas-internal mutable state
@@ -84,6 +90,39 @@ pub struct CanvasState {
     phase: DrawPhase,
     cursor: Point,
     hovered: Option<HoveredTarget>,
+    /// Cached canvas geometry.
+    ///
+    /// iced's canvas always registers a text group when the geometry is live,
+    /// even when it contains no text, and iced_wgpu initialises the (expensive)
+    /// system font database before inspecting that group. Caching keeps the
+    /// first frames text-free so the frozen image can present before the font
+    /// scan finishes; labels are drawn once `text_ready` flips.
+    cache: canvas::Cache,
+    /// Inputs that invalidate the cached geometry when they change.
+    last_mode: Cell<Option<CaptureMode>>,
+    last_text_ready: Cell<Option<bool>>,
+}
+
+impl CanvasState {
+    /// Clears the cached geometry when a drawing input changed.
+    ///
+    /// Returns `true` when the cache was invalidated.
+    fn invalidate_if_needed(&self, mode: CaptureMode, text_ready: bool) -> bool {
+        let mut invalidated = false;
+
+        if self.last_mode.get() != Some(mode) {
+            self.cache.clear();
+            self.last_mode.set(Some(mode));
+            invalidated = true;
+        }
+        if self.last_text_ready.get() != Some(text_ready) {
+            self.cache.clear();
+            self.last_text_ready.set(Some(text_ready));
+            invalidated = true;
+        }
+
+        invalidated
+    }
 }
 
 #[derive(Default)]
@@ -114,6 +153,7 @@ impl canvas::Program<Message> for SelectionCanvas {
                 }
                 match &state.phase {
                     DrawPhase::Cropping { .. } => {
+                        state.cache.clear();
                         return Some(canvas::Action::request_redraw());
                     }
                     DrawPhase::Idle => {
@@ -140,6 +180,7 @@ impl canvas::Program<Message> for SelectionCanvas {
                             _ => None,
                         };
                         if state.hovered != prev {
+                            state.cache.clear();
                             return Some(canvas::Action::request_redraw());
                         }
                     }
@@ -149,6 +190,7 @@ impl canvas::Program<Message> for SelectionCanvas {
             canvas::Event::Mouse(mouse::Event::CursorLeft) => {
                 if state.hovered.is_some() {
                     state.hovered = None;
+                    state.cache.clear();
                     return Some(canvas::Action::request_redraw());
                 }
             }
@@ -158,6 +200,7 @@ impl canvas::Program<Message> for SelectionCanvas {
                     CaptureMode::Crop => {
                         if let Some(p) = pos {
                             state.phase = DrawPhase::Cropping { start: p };
+                            state.cache.clear();
                             return Some(canvas::Action::request_redraw().and_capture());
                         }
                     }
@@ -195,6 +238,7 @@ impl canvas::Program<Message> for SelectionCanvas {
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 if let DrawPhase::Cropping { start } = state.phase {
                     state.phase = DrawPhase::Idle;
+                    state.cache.clear();
                     let local_rect = points_to_rect(start, state.cursor);
                     if local_rect.w >= 5 && local_rect.h >= 5 {
                         // Convert canvas-local coords to global logical space for crop
@@ -227,60 +271,82 @@ impl canvas::Program<Message> for SelectionCanvas {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry<iced::Renderer>> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        // Invalidate the cache when anything the drawing depends on changes.
+        // `text_ready` flips when the background font scan finishes, at which
+        // point labels may be added. Returns a *cached* geometry: unlike a live
+        // geometry, it emits no empty text group, so the first frames do not
+        // initialise the font database.
+        state.invalidate_if_needed(self.mode, self.text_ready);
 
-        frame.fill(
-            &canvas::Path::rectangle(Point::ORIGIN, bounds.size()),
-            to_iced(self.colors.overlay.background),
-        );
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            frame.fill(
+                &canvas::Path::rectangle(Point::ORIGIN, bounds.size()),
+                to_iced(self.colors.overlay.background),
+            );
 
-        match self.mode {
-            CaptureMode::Crop => {
-                if let DrawPhase::Cropping { start } = state.phase {
-                    draw_selection(&mut frame, start, state.cursor, &self.colors.crop_frame);
+            match self.mode {
+                CaptureMode::Crop => {
+                    if let DrawPhase::Cropping { start } = state.phase {
+                        draw_selection(
+                            frame,
+                            start,
+                            state.cursor,
+                            &self.colors.crop_frame,
+                            self.text_ready,
+                        );
+                    }
                 }
+                CaptureMode::Window => {
+                    let show_text = self.text_ready;
+                    for (i, win) in self.windows.iter().enumerate() {
+                        draw_highlight(
+                            frame,
+                            win.rect,
+                            state.hovered == Some(HoveredTarget::Window(i)),
+                            if show_text { win.title.as_str() } else { "" },
+                            self.monitor_offset,
+                            self.border_style,
+                            &self.colors.window_frame,
+                        );
+                    }
+                    // Layer surfaces are at overlay level — draw on top of windows
+                    for (i, layer) in self.layers.iter().enumerate() {
+                        draw_highlight(
+                            frame,
+                            layer.rect,
+                            state.hovered == Some(HoveredTarget::Layer(i)),
+                            if show_text {
+                                layer.namespace.as_str()
+                            } else {
+                                ""
+                            },
+                            self.monitor_offset,
+                            BorderStyle::default(),
+                            &self.colors.window_frame,
+                        );
+                    }
+                }
+                CaptureMode::Monitor => {
+                    for (i, mon) in self.monitors.iter().enumerate() {
+                        draw_monitor_highlight(
+                            frame,
+                            mon.rect,
+                            state.hovered == Some(HoveredTarget::Monitor(i)),
+                            if self.text_ready {
+                                mon.name.as_str()
+                            } else {
+                                ""
+                            },
+                            self.monitor_offset,
+                            &self.colors.monitor_frame,
+                        );
+                    }
+                }
+                CaptureMode::All => {}
             }
-            CaptureMode::Window => {
-                for (i, win) in self.windows.iter().enumerate() {
-                    draw_highlight(
-                        &mut frame,
-                        win.rect,
-                        state.hovered == Some(HoveredTarget::Window(i)),
-                        &win.title,
-                        self.monitor_offset,
-                        self.border_style,
-                        &self.colors.window_frame,
-                    );
-                }
-                // Layer surfaces are at overlay level — draw on top of windows
-                for (i, layer) in self.layers.iter().enumerate() {
-                    draw_highlight(
-                        &mut frame,
-                        layer.rect,
-                        state.hovered == Some(HoveredTarget::Layer(i)),
-                        &layer.namespace,
-                        self.monitor_offset,
-                        BorderStyle::default(),
-                        &self.colors.window_frame,
-                    );
-                }
-            }
-            CaptureMode::Monitor => {
-                for (i, mon) in self.monitors.iter().enumerate() {
-                    draw_monitor_highlight(
-                        &mut frame,
-                        mon.rect,
-                        state.hovered == Some(HoveredTarget::Monitor(i)),
-                        &mon.name,
-                        self.monitor_offset,
-                        &self.colors.monitor_frame,
-                    );
-                }
-            }
-            CaptureMode::All => {}
-        }
+        });
 
-        vec![frame.into_geometry()]
+        vec![geometry]
     }
 
     fn mouse_interaction(
@@ -318,6 +384,8 @@ pub struct AppStateConfig {
     pub initial_mode: CaptureMode,
     pub colors: FreezeColors,
     pub freeze_buttons: FreezeButtons,
+    /// Background font scan shared with `run_freeze`.
+    pub fonts: FontWarmup,
 }
 
 pub struct AppState {
@@ -344,6 +412,8 @@ pub struct AppState {
     border_style: BorderStyle,
     colors: FreezeColors,
     freeze_buttons: FreezeButtons,
+    /// Shared with the background font warm-up thread launched by `run_freeze`.
+    fonts: FontWarmup,
 }
 
 impl AppState {
@@ -363,7 +433,17 @@ impl AppState {
             border_style: cfg.border_style,
             colors: cfg.colors,
             freeze_buttons: cfg.freeze_buttons,
+            fonts: cfg.fonts,
         }
+    }
+
+    /// Whether the font database is loaded and safe to shape text with.
+    ///
+    /// Text widgets are withheld until this returns `true` so that the first
+    /// frozen frame can be presented without waiting for the font scan. A failed
+    /// scan leaves text disabled for the session rather than retrying.
+    fn text_ready(&self) -> bool {
+        self.fonts.is_ready()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -389,9 +469,19 @@ impl AppState {
             Message::Cancel => {
                 return iced::exit();
             }
-            Message::Tick => {
-                self.repaint_ticks = self.repaint_ticks.saturating_sub(1);
-            }
+            Message::Tick => match self.fonts.status() {
+                FontStatus::Pending => {
+                    // Keep requesting frames while the font database is loading so
+                    // the toolbar/labels appear as soon as they can be shaped,
+                    // without waiting for the next user interaction.
+                    self.repaint_ticks = self.repaint_ticks.max(1);
+                }
+                // A failed scan never produces text; stop the frame loop instead
+                // of rendering indefinitely for widgets that cannot appear.
+                FontStatus::Ready | FontStatus::Failed => {
+                    self.repaint_ticks = self.repaint_ticks.saturating_sub(1);
+                }
+            },
             // Layershell control variants generated by macro — no-op
             _ => {}
         }
@@ -422,6 +512,7 @@ impl AppState {
             monitor_offset,
             border_style: self.border_style,
             colors: self.colors,
+            text_ready: self.text_ready(),
         };
 
         let toolbar = self.toolbar();
@@ -458,9 +549,10 @@ impl AppState {
         }
     }
 
-    /// Builds the toolbar widget, or returns `None` if all buttons are disabled.
+    /// Builds the toolbar widget, or returns `None` if all buttons are disabled
+    /// or the font database is still loading (text layout would block on it).
     fn toolbar(&self) -> Option<Element<'_, Message>> {
-        if !self.freeze_buttons.any_visible() {
+        if !self.freeze_buttons.any_visible() || !self.text_ready() {
             return None;
         }
 
@@ -624,7 +716,13 @@ fn to_iced(c: RgbaColor) -> iced::Color {
     iced::Color::from_rgba(c.0[0], c.0[1], c.0[2], c.0[3])
 }
 
-fn draw_selection(frame: &mut canvas::Frame, start: Point, end: Point, colors: &CropFrameColors) {
+fn draw_selection(
+    frame: &mut canvas::Frame,
+    start: Point,
+    end: Point,
+    colors: &CropFrameColors,
+    text_ready: bool,
+) {
     let x = start.x.min(end.x);
     let y = start.y.min(end.y);
     let w = (start.x - end.x).abs();
@@ -643,6 +741,10 @@ fn draw_selection(frame: &mut canvas::Frame, start: Point, end: Point, colors: &
             .with_color(to_iced(colors.stroke))
             .with_width(1.5),
     );
+
+    if !text_ready {
+        return;
+    }
 
     frame.fill_text(canvas::Text {
         content: format!("{} × {}", w as i32, h as i32),
@@ -884,4 +986,113 @@ pub fn app_view(state: &AppState, window: iced::window::Id) -> iced::Element<'_,
 
 pub fn app_subscription(state: &AppState) -> Subscription<Message> {
     state.subscription()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state(fonts: FontWarmup) -> AppState {
+        AppState::new(AppStateConfig {
+            monitor_images: vec![image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255])],
+            focused_monitor_idx: 0,
+            window_to_monitor: HashMap::new(),
+            windows: Arc::new(Vec::new()),
+            layers: Arc::new(Vec::new()),
+            monitors: Arc::new(vec![MonitorInfo {
+                rect: ScreenRect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                },
+                name: "eDP-1".to_string(),
+                focused: true,
+                active_workspace_id: 1,
+            }]),
+            result: Arc::new(Mutex::new(None)),
+            glyphs: FreezeGlyphs::default(),
+            toolbar_position: ToolbarPosition::default(),
+            border_style: BorderStyle::default(),
+            initial_mode: CaptureMode::Crop,
+            colors: FreezeColors::default(),
+            freeze_buttons: FreezeButtons::default(),
+            fonts,
+        })
+    }
+
+    #[test]
+    fn toolbar_is_withheld_until_fonts_are_ready() {
+        let state = test_state(FontWarmup::with_status(FontStatus::Pending));
+        assert!(!state.text_ready());
+        assert!(state.toolbar().is_none());
+    }
+
+    #[test]
+    fn toolbar_appears_once_fonts_are_ready() {
+        let state = test_state(FontWarmup::with_status(FontStatus::Ready));
+        assert!(state.text_ready());
+        assert!(state.toolbar().is_some());
+    }
+
+    #[test]
+    fn failed_font_warmup_keeps_text_disabled() {
+        let state = test_state(FontWarmup::with_status(FontStatus::Failed));
+        assert!(!state.text_ready());
+        assert!(state.toolbar().is_none());
+    }
+
+    #[test]
+    fn pending_fonts_keep_the_frame_loop_alive() {
+        let mut state = test_state(FontWarmup::with_status(FontStatus::Pending));
+        state.repaint_ticks = 0;
+
+        let _ = state.update(Message::Tick);
+        assert_eq!(
+            state.repaint_ticks, 1,
+            "a frame must be requested while fonts load"
+        );
+
+        state.fonts.set_status(FontStatus::Ready);
+        let _ = state.update(Message::Tick);
+        assert_eq!(
+            state.repaint_ticks, 0,
+            "the frame loop must stop once fonts are ready"
+        );
+    }
+
+    #[test]
+    fn failed_font_warmup_does_not_keep_rendering() {
+        let mut state = test_state(FontWarmup::with_status(FontStatus::Failed));
+        state.repaint_ticks = 0;
+
+        let _ = state.update(Message::Tick);
+        assert_eq!(
+            state.repaint_ticks, 0,
+            "no frames are needed for text that cannot be shaped"
+        );
+    }
+
+    #[test]
+    fn canvas_cache_invalidates_only_when_drawing_inputs_change() {
+        let state = CanvasState::default();
+
+        assert!(
+            state.invalidate_if_needed(CaptureMode::Crop, false),
+            "the first draw must populate the cache"
+        );
+        assert!(
+            !state.invalidate_if_needed(CaptureMode::Crop, false),
+            "unchanged inputs must reuse the cached geometry"
+        );
+        assert!(
+            state.invalidate_if_needed(CaptureMode::Window, false),
+            "a mode change must invalidate the cache"
+        );
+        assert!(
+            state.invalidate_if_needed(CaptureMode::Window, true),
+            "font readiness must invalidate the cache so labels appear"
+        );
+        assert!(!state.invalidate_if_needed(CaptureMode::Window, true));
+    }
 }

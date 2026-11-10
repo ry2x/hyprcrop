@@ -24,32 +24,83 @@ use iced_layershell::{
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use crate::domain::config::Config;
 use crate::domain::constants::FREEZE_LAYER_NAMESPACE;
 use crate::domain::error::{AppError, Result};
-use crate::domain::types::{BorderStyle, ScreenRect};
-use crate::platform::capture::screencopy;
+use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
+use crate::platform::capture::screencopy::{self, CapturedFrame};
 use crate::platform::capture::toplevel_export;
 use crate::platform::system::hyprland::{self};
 
-pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
-    // Fetch Hyprland data in parallel threads for speed.
-    // At most 3 concurrent connections (monitors, clients, layers) — well within
-    // Hyprland's IPC capacity. Border style is fetched after joining to avoid
-    // saturating the socket with 5 simultaneous connections (which caused BrokenPipe).
-    let monitors_t = std::thread::spawn(hyprland::get_monitors);
-    let clients_t = std::thread::spawn(hyprland::get_clients);
-    let layers_t = std::thread::spawn(hyprland::get_overlay_layers);
+/// Hyprland data and the single frozen frame used by the overlay.
+#[derive(Debug)]
+struct FreezeScene {
+    monitors: Vec<MonitorInfo>,
+    windows: Vec<WindowInfo>,
+    layers: Vec<LayerSurface>,
+    border_style: BorderStyle,
+    captured: Vec<CapturedFrame>,
+}
 
-    let monitors_raw = monitors_t
+/// Fetch Hyprland scene data and start the screenshot session as early as possible.
+///
+/// Monitor/output identifiers are the only data the Wayland capture needs, so the
+/// capture is started immediately after monitor discovery. Window, layer and
+/// border queries overlap with the capture instead of delaying it. The capture is
+/// still a single session, so the overlay and the final crop share one frame.
+///
+/// The border query starts after monitor discovery to keep the number of concurrent
+/// Hyprland IPC connections at most three; Hyprland has dropped connections when
+/// too many sockets were opened at once.
+fn prefetch_scene<M, W, L, B, C>(
+    monitors_fn: M,
+    windows_fn: W,
+    layers_fn: L,
+    border_style_fn: Option<B>,
+    capture_fn: C,
+) -> Result<FreezeScene>
+where
+    M: FnOnce() -> Result<Vec<MonitorInfo>> + Send + 'static,
+    W: FnOnce() -> Result<Vec<WindowInfo>> + Send + 'static,
+    L: FnOnce() -> Result<Vec<LayerSurface>> + Send + 'static,
+    B: FnOnce() -> BorderStyle + Send + 'static,
+    C: FnOnce(Vec<MonitorInfo>) -> Result<Vec<CapturedFrame>> + Send + 'static,
+{
+    let monitors_t = std::thread::spawn(monitors_fn);
+    let windows_t = std::thread::spawn(windows_fn);
+    let layers_t = std::thread::spawn(layers_fn);
+
+    let monitors = match monitors_t.join() {
+        Ok(Ok(monitors)) => monitors,
+        Ok(Err(err)) => {
+            // Capture cannot start without output identifiers; still join the
+            // other queries so no worker is left detached.
+            let _ = windows_t.join();
+            let _ = layers_t.join();
+            return Err(err);
+        }
+        Err(_) => {
+            let _ = windows_t.join();
+            let _ = layers_t.join();
+            return Err(AppError::Other("monitors thread panicked".into()));
+        }
+    };
+
+    let border_t = border_style_fn.map(std::thread::spawn);
+    let capture_monitors = monitors.clone();
+    let capture_t = std::thread::spawn(move || capture_fn(capture_monitors));
+
+    // Join every worker before propagating an error, otherwise a failing IPC
+    // query would leave the capture thread running detached.
+    let windows_result = windows_t
         .join()
-        .map_err(|_| AppError::Other("monitors thread panicked".into()))??;
-    let clients_raw = clients_t
-        .join()
-        .map_err(|_| AppError::Other("clients thread panicked".into()))??;
+        .map_err(|_| AppError::Other("windows thread panicked".into()));
     let layers = layers_t
         .join()
         .unwrap_or_else(|_| {
@@ -60,38 +111,79 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
             eprintln!("[hyprcrop] warning: failed to fetch overlay layers: {e}");
             Vec::new()
         });
-
-    // Border expansion is irrelevant when toplevel-export is used (the protocol
-    // captures the raw window surface, no compositor decorations). Suppress it here
-    // rather than mutating the global config flag, so non-freeze commands are unaffected.
-    let border_style = if cfg.capture_window_border {
-        hyprland::get_border_style()
-    } else {
-        BorderStyle::default()
+    let border_style = match border_t {
+        Some(handle) => handle.join().unwrap_or_else(|_| {
+            eprintln!("[hyprcrop] warning: border style thread panicked");
+            BorderStyle::default()
+        }),
+        None => BorderStyle::default(),
     };
+    let capture_result = capture_t
+        .join()
+        .map_err(|_| AppError::Other("capture thread panicked".into()));
+
+    let windows = windows_result??;
+    let captured = capture_result??;
+
+    Ok(FreezeScene {
+        monitors,
+        windows,
+        layers,
+        border_style,
+        captured,
+    })
+}
+
+pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
+    // iced builds its system font database lazily on the first text layout, which
+    // scans every installed font. Do it while the screen is being captured instead
+    // of on the overlay's critical path; views omit text until this flag flips
+    // (see `AppState::text_ready`).
+    let fonts = FontWarmup::spawn();
+
+    let scene = prefetch_scene(
+        || hyprland::get_monitors().map(hyprland::parse_monitors),
+        || {
+            // Keep the upstream behaviour of filtering clients with the monitor
+            // snapshot taken at capture time. This extra query runs in parallel
+            // with the capture and layer queries.
+            let monitors = hyprland::parse_monitors(hyprland::get_monitors()?);
+            let active_ws_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
+            Ok(hyprland::parse_windows(
+                hyprland::get_clients()?,
+                &active_ws_ids,
+            ))
+        },
+        hyprland::get_overlay_layers,
+        cfg.capture_window_border
+            .then_some(hyprland::get_border_style),
+        |monitors| screencopy::capture_all_monitors_physical(&monitors),
+    )?;
+    let FreezeScene {
+        monitors,
+        windows,
+        layers,
+        border_style,
+        captured,
+    } = scene;
+
     let initial_mode =
         resolve_initial_mode(&cfg.freeze_buttons, crate::domain::state::load_last_mode());
 
-    let monitors = hyprland::parse_monitors(monitors_raw);
-    let active_ws_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
-    let windows = hyprland::parse_windows(clients_raw, &active_ws_ids);
-
     // Compute origin before monitors are moved into Arc.
-    // capture_all_monitors places (min_x, min_y) at image pixel (0,0); we need this
+    // The logical composite places (min_x, min_y) at image pixel (0,0); we need this
     // to translate the UI's global logical coordinates into image coordinates later.
     let (min_x, min_y) = crate::domain::geometry::monitor_origin(&monitors);
 
-    // Capture all monitors in a single Wayland session.
-    // Using one session guarantees the overlay images and the final-crop source are
-    // from the same frame — two separate captures would differ in time, breaking
-    // the "freeze" guarantee (user selects based on a different frame than what gets saved).
-    let (physical_per_monitor, full_rgba) =
-        screencopy::capture_all_monitors_with_physical(&monitors)?;
-
-    let monitor_images: Vec<iced_image::Handle> = physical_per_monitor
+    // Move the physical RGBA buffers into iced handles. Keep a cheap clone of the
+    // handles (the pixel data is shared behind an `Arc`), so the final save can
+    // reuse exactly the same frame without duplicating it.
+    let monitor_images: Vec<iced_image::Handle> = captured
         .into_iter()
-        .map(|img| iced_image::Handle::from_rgba(img.width(), img.height(), img.into_raw()))
+        .map(|frame| iced_image::Handle::from_rgba(frame.width, frame.height, frame.pixels))
         .collect();
+    let saved_images = monitor_images.clone();
+    let save_monitors = monitors.clone();
 
     let focused_monitor_idx = monitors.iter().position(|m| m.focused).unwrap_or(0);
 
@@ -163,6 +255,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                     initial_mode,
                     colors,
                     freeze_buttons,
+                    fonts: fonts.clone(),
                 });
                 (state, Task::batch(spawn_tasks))
             },
@@ -190,11 +283,16 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
 
     let out_path = cfg.output_path();
 
+    // Borrow the exact pixels that were shown in the overlay. The composite is
+    // built only for the selected region and only after the user has chosen.
+    let frames: Vec<screencopy::FrameRef<'_>> =
+        saved_images.iter().map(frame_ref).collect::<Result<_>>()?;
+
     match selected {
         None => Err(AppError::UserCancelled),
         Some(None) => {
             // "All" mode: save the full frozen image.
-            screencopy::crop_and_save(full_rgba, None, &out_path)?;
+            screencopy::save_composed_region(&save_monitors, &frames, None, &out_path)?;
             Ok(out_path)
         }
         Some(Some(FreezeSelection::Region(r))) => {
@@ -206,7 +304,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                 w: r.w,
                 h: r.h,
             };
-            screencopy::crop_and_save(full_rgba, Some(adjusted), &out_path)?;
+            screencopy::save_composed_region(&save_monitors, &frames, Some(adjusted), &out_path)?;
             Ok(out_path)
         }
         Some(Some(FreezeSelection::ToplevelWindow(window))) => {
@@ -234,10 +332,124 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
                     h: window.rect.h,
                 }
                 .expand(border_style.border_size);
-                screencopy::crop_and_save(full_rgba, Some(adjusted), &out_path)?;
+                screencopy::save_composed_region(
+                    &save_monitors,
+                    &frames,
+                    Some(adjusted),
+                    &out_path,
+                )?;
             }
             Ok(out_path)
         }
+    }
+}
+
+/// Borrow raw RGBA pixels from an iced image handle.
+///
+/// `Handle::Rgba` stores the same `Bytes` buffer that the renderer uploads, so
+/// the save path can reuse it without copying.
+fn frame_ref(handle: &iced_image::Handle) -> Result<screencopy::FrameRef<'_>> {
+    match handle {
+        iced_image::Handle::Rgba {
+            width,
+            height,
+            pixels,
+            ..
+        } => Ok(screencopy::FrameRef {
+            width: *width,
+            height: *height,
+            pixels: pixels.as_ref(),
+        }),
+        _ => Err(AppError::Other(
+            "freeze capture produced a non-RGBA image handle".to_string(),
+        )),
+    }
+}
+
+/// Lifecycle of iced's lazily-built system font database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FontStatus {
+    /// The scan is still running; text must not be shaped yet.
+    Pending,
+    /// The database is usable.
+    Ready,
+    /// The scan panicked. Text shaping is unsafe, so text widgets stay disabled
+    /// for the rest of the session instead of retrying in a possibly poisoned
+    /// state.
+    Failed,
+}
+
+impl FontStatus {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Ready,
+            2 => Self::Failed,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// Background warm-up of iced's system font database.
+///
+/// `iced_graphics` builds cosmic-text's font database lazily on the first call to
+/// `font_system()`, which scans every installed font. That scan is usually around
+/// 100 ms and can take seconds on a cold page cache with large font collections.
+/// Starting it on a background thread lets it overlap screenshot capture, while
+/// `AppState::text_ready` keeps views from shaping text until it completes.
+#[derive(Debug, Clone)]
+pub(crate) struct FontWarmup {
+    state: Arc<AtomicU8>,
+}
+
+impl FontWarmup {
+    /// Start the scan on a background thread.
+    fn spawn() -> Self {
+        Self::spawn_with(|| {
+            let _ = iced::advanced::graphics::text::font_system();
+        })
+    }
+
+    /// Run `init` on a background thread and publish the resulting status.
+    ///
+    /// Kept generic so orchestration can be tested without paying for a real font
+    /// scan in the unit test suite.
+    fn spawn_with(init: impl FnOnce() + Send + 'static) -> Self {
+        let state = Arc::new(AtomicU8::new(FontStatus::Pending as u8));
+        let shared = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(init));
+            let next = match outcome {
+                Ok(()) => FontStatus::Ready,
+                Err(_) => {
+                    eprintln!(
+                        "[hyprcrop] warning: font warm-up failed; freeze overlay text stays disabled"
+                    );
+                    FontStatus::Failed
+                }
+            };
+            shared.store(next as u8, Ordering::Release);
+        });
+        Self { state }
+    }
+
+    fn status(&self) -> FontStatus {
+        FontStatus::from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    fn is_ready(&self) -> bool {
+        self.status() == FontStatus::Ready
+    }
+
+    #[cfg(test)]
+    fn with_status(status: FontStatus) -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(status as u8)),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_status(&self, status: FontStatus) {
+        self.state.store(status as u8, Ordering::Release);
     }
 }
 
@@ -268,5 +480,141 @@ fn resolve_initial_mode(
         // interactions (drag-to-select region) remain available even when the
         // toolbar is hidden or cancel-only.
         CaptureMode::Crop
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    fn monitor(name: &str) -> MonitorInfo {
+        MonitorInfo {
+            rect: ScreenRect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            name: name.to_string(),
+            focused: true,
+            active_workspace_id: 1,
+        }
+    }
+
+    fn captured_frame() -> CapturedFrame {
+        CapturedFrame {
+            width: 1,
+            height: 1,
+            pixels: vec![0, 0, 0, 255],
+        }
+    }
+
+    fn wait_for_status(warmup: &FontWarmup, expected: FontStatus) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while warmup.status() == FontStatus::Pending {
+            assert!(
+                Instant::now() < deadline,
+                "warm-up status never left Pending"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(warmup.status(), expected);
+    }
+
+    #[test]
+    fn capture_starts_before_windows_query_completes() {
+        let (capture_started_tx, capture_started_rx) = mpsc::channel();
+        let (windows_done_tx, windows_done_rx) = mpsc::channel();
+
+        let scene = prefetch_scene(
+            || Ok(vec![monitor("eDP-1")]),
+            move || {
+                capture_started_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("capture must start before the windows query completes");
+                windows_done_tx.send(()).unwrap();
+                Ok(Vec::new())
+            },
+            || Ok(Vec::new()),
+            None::<fn() -> BorderStyle>,
+            move |_monitors| {
+                capture_started_tx.send(()).unwrap();
+                windows_done_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("windows query must overlap the capture");
+                Ok(vec![captured_frame()])
+            },
+        )
+        .expect("prefetch should succeed");
+
+        assert_eq!(scene.monitors.len(), 1);
+        assert_eq!(scene.captured.len(), 1);
+    }
+
+    #[test]
+    fn layer_query_errors_do_not_abort_capture() {
+        let scene = prefetch_scene(
+            || Ok(vec![monitor("eDP-1")]),
+            || Ok(Vec::new()),
+            || Err(AppError::Other("layers unavailable".into())),
+            None::<fn() -> BorderStyle>,
+            |_| Ok(vec![captured_frame()]),
+        )
+        .expect("layer errors are non-fatal");
+
+        assert!(scene.layers.is_empty());
+        assert_eq!(scene.captured.len(), 1);
+    }
+
+    #[test]
+    fn monitor_failure_prevents_capture_and_propagates() {
+        let err = prefetch_scene(
+            || Err(AppError::Other("no monitors".into())),
+            || Ok(Vec::new()),
+            || Ok(Vec::new()),
+            None::<fn() -> BorderStyle>,
+            |_| -> Result<Vec<CapturedFrame>> {
+                panic!("capture must not start without monitor identifiers");
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, AppError::Other(_)));
+    }
+
+    #[test]
+    fn warmup_becomes_ready_only_after_init_finishes() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        let warmup = FontWarmup::spawn_with(move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("warm-up thread must start");
+        assert_eq!(
+            warmup.status(),
+            FontStatus::Pending,
+            "status must stay Pending while init runs"
+        );
+
+        release_tx.send(()).unwrap();
+        wait_for_status(&warmup, FontStatus::Ready);
+    }
+
+    #[test]
+    fn warmup_reports_failure_instead_of_ready() {
+        let warmup = FontWarmup::spawn_with(|| panic!("simulated font scan failure"));
+
+        wait_for_status(&warmup, FontStatus::Failed);
+        assert!(
+            !warmup.is_ready(),
+            "a failed font scan must never be reported as ready"
+        );
     }
 }

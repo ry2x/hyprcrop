@@ -127,6 +127,148 @@ pub fn read_pixel_rgba(data: &[u8], offset: usize, format: WEnum<wl_shm::Format>
     }
 }
 
+// ── Row-wise RGBA conversion ──────────────────────────────────────────────────
+
+/// Return the number of bytes occupied by one pixel in a supported wl_shm format.
+#[inline]
+pub fn bytes_per_pixel(format: WEnum<wl_shm::Format>) -> usize {
+    match format {
+        WEnum::Value(
+            wl_shm::Format::Argb8888
+            | wl_shm::Format::Xrgb8888
+            | wl_shm::Format::Abgr8888
+            | wl_shm::Format::Xbgr8888,
+        ) => 4,
+        _ => 0,
+    }
+}
+
+/// Append one tightly-packed source row converted to RGBA to `out`.
+///
+/// `out` receives exactly `width * 4` bytes and is cleared first. The caller is
+/// responsible for slicing away stride padding; only `width * bytes_per_pixel`
+/// bytes are read from `data`.
+///
+/// The channel layout is selected once per row, so the inner loop has no
+/// per-pixel format branch (unlike [`read_pixel_rgba`]).
+pub fn rgba_row(
+    data: &[u8],
+    width: u32,
+    format: WEnum<wl_shm::Format>,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let pixel_size = bytes_per_pixel(format);
+    if pixel_size == 0 {
+        return Err(AppError::Wayland(format!(
+            "unsupported wl_shm format for RGBA conversion: {format:?}"
+        )));
+    }
+
+    let needed = (width as usize)
+        .checked_mul(pixel_size)
+        .ok_or_else(|| AppError::Wayland(format!("row width overflow: {width} px")))?;
+    if data.len() < needed {
+        return Err(AppError::Wayland(format!(
+            "row buffer too small: {} bytes for {width} px at {pixel_size} bpp",
+            data.len()
+        )));
+    }
+
+    let data = &data[..needed];
+    out.clear();
+    out.reserve(width as usize * 4);
+
+    match format {
+        // ARGB8888: [B, G, R, A]
+        WEnum::Value(wl_shm::Format::Argb8888) => {
+            for px in data.as_chunks::<4>().0 {
+                out.push(px[2]);
+                out.push(px[1]);
+                out.push(px[0]);
+                out.push(px[3]);
+            }
+        }
+        // XRGB8888: [B, G, R, X] → opaque
+        WEnum::Value(wl_shm::Format::Xrgb8888) => {
+            for px in data.as_chunks::<4>().0 {
+                out.push(px[2]);
+                out.push(px[1]);
+                out.push(px[0]);
+                out.push(255);
+            }
+        }
+        // ABGR8888: [R, G, B, A]
+        WEnum::Value(wl_shm::Format::Abgr8888) => {
+            for px in data.as_chunks::<4>().0 {
+                out.push(px[0]);
+                out.push(px[1]);
+                out.push(px[2]);
+                out.push(px[3]);
+            }
+        }
+        // XBGR8888: [R, G, B, X] → opaque
+        WEnum::Value(wl_shm::Format::Xbgr8888) => {
+            for px in data.as_chunks::<4>().0 {
+                out.push(px[0]);
+                out.push(px[1]);
+                out.push(px[2]);
+                out.push(255);
+            }
+        }
+        _ => unreachable!("bytes_per_pixel rejected unsupported formats"),
+    }
+
+    debug_assert_eq!(out.len(), width as usize * 4);
+    Ok(())
+}
+
+/// Convert a whole wl_shm buffer to tightly-packed RGBA, honouring stride padding.
+///
+/// Returns `width * height * 4` bytes. This is the fast path used by freeze mode
+/// to produce the overlay's physical-resolution image in one row-wise pass.
+pub fn rgba_pixels(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: WEnum<wl_shm::Format>,
+) -> Result<Vec<u8>> {
+    let pixel_size = bytes_per_pixel(format);
+    if pixel_size == 0 {
+        return Err(AppError::Wayland(format!(
+            "unsupported wl_shm format for RGBA conversion: {format:?}"
+        )));
+    }
+
+    let row_bytes = (width as usize)
+        .checked_mul(pixel_size)
+        .ok_or_else(|| AppError::Wayland(format!("row width overflow: {width} px")))?;
+    let stride = stride as usize;
+    if stride < row_bytes {
+        return Err(AppError::Wayland(format!(
+            "invalid stride: stride={stride} width={width} (expected ≥{row_bytes})"
+        )));
+    }
+    let total = stride
+        .checked_mul(height as usize)
+        .ok_or_else(|| AppError::Wayland(format!("buffer size overflow: {stride} × {height}")))?;
+    if data.len() < total {
+        return Err(AppError::Wayland(format!(
+            "buffer too small: {} bytes, need {total}",
+            data.len()
+        )));
+    }
+
+    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut row = Vec::with_capacity(width as usize * 4);
+    for y in 0..height as usize {
+        let start = y * stride;
+        rgba_row(&data[start..start + row_bytes], width, format, &mut row)?;
+        out.extend_from_slice(&row);
+    }
+    Ok(out)
+}
+
 // ── alloc_shm_buffer ──────────────────────────────────────────────────────────
 
 /// Allocate a shared-memory buffer for a Wayland screencopy or toplevel-export frame.
@@ -198,4 +340,78 @@ where
     pool.destroy();
 
     Ok((mmap, buffer))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_supported_pixel_sizes() {
+        assert_eq!(bytes_per_pixel(WEnum::Value(wl_shm::Format::Xrgb8888)), 4);
+        assert_eq!(bytes_per_pixel(WEnum::Value(wl_shm::Format::Argb8888)), 4);
+        assert_eq!(bytes_per_pixel(WEnum::Value(wl_shm::Format::Bgr888)), 0);
+    }
+
+    #[test]
+    fn rgba_row_matches_pixel_decoder_for_all_formats() {
+        let cases: &[(wl_shm::Format, [u8; 4], Rgba<u8>)] = &[
+            (
+                wl_shm::Format::Argb8888,
+                [0x10, 0x20, 0x30, 0x40],
+                Rgba([0x30, 0x20, 0x10, 0x40]),
+            ),
+            (
+                wl_shm::Format::Xrgb8888,
+                [0x10, 0x20, 0x30, 0x40],
+                Rgba([0x30, 0x20, 0x10, 255]),
+            ),
+            (
+                wl_shm::Format::Abgr8888,
+                [0x10, 0x20, 0x30, 0x40],
+                Rgba([0x10, 0x20, 0x30, 0x40]),
+            ),
+            (
+                wl_shm::Format::Xbgr8888,
+                [0x10, 0x20, 0x30, 0x40],
+                Rgba([0x10, 0x20, 0x30, 255]),
+            ),
+        ];
+
+        for (format, bytes, expected) in cases {
+            let format = WEnum::Value(*format);
+            let mut out = vec![0xaa; 8];
+            rgba_row(bytes, 1, format, &mut out).unwrap();
+            assert_eq!(out, expected.0.to_vec(), "row conversion for {format:?}");
+
+            let pixels = rgba_pixels(bytes, 1, 1, 4, format).unwrap();
+            assert_eq!(
+                pixels,
+                expected.0.to_vec(),
+                "buffer conversion for {format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rgba_pixels_ignores_stride_padding() {
+        // Two pixels per row, stride padded to 12 bytes, two rows.
+        let data = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xff, 0xff, 0xff, 0xff, 0x09, 0x0a,
+            0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0xff, 0xff, 0xff, 0xff,
+        ];
+        let pixels = rgba_pixels(&data, 2, 2, 12, WEnum::Value(wl_shm::Format::Xbgr8888)).unwrap();
+        assert_eq!(
+            pixels,
+            vec![1, 2, 3, 255, 5, 6, 7, 255, 9, 10, 11, 255, 13, 14, 15, 255,]
+        );
+    }
+
+    #[test]
+    fn rgba_conversion_rejects_invalid_buffers() {
+        let format = WEnum::Value(wl_shm::Format::Xrgb8888);
+        assert!(rgba_row(&[0, 0, 0], 1, format, &mut Vec::new()).is_err());
+        assert!(rgba_pixels(&[0; 8], 2, 2, 4, format).is_err());
+        assert!(rgba_pixels(&[0; 8], 1, 1, 3, format).is_err());
+    }
 }
