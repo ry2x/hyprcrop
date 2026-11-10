@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_monitor_origin() {
-        use crate::domain::types::{MonitorInfo, ScreenRect, WorkspaceId};
+        use crate::domain::types::{MonitorInfo, ScreenRect};
         let monitors = vec![
             MonitorInfo {
                 rect: ScreenRect {
@@ -102,7 +102,7 @@ mod tests {
                 },
                 name: "DP-2".to_string(),
                 focused: false,
-                active_workspace: WorkspaceId::Legacy { id: 2 },
+                active_workspace_id: 2,
             },
             MonitorInfo {
                 rect: ScreenRect {
@@ -113,7 +113,7 @@ mod tests {
                 },
                 name: "DP-1".to_string(),
                 focused: true,
-                active_workspace: WorkspaceId::Legacy { id: 1 },
+                active_workspace_id: 1,
             },
         ];
         assert_eq!(monitor_origin(&monitors), (-1920, 0));

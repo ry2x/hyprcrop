@@ -54,16 +54,7 @@ pub struct MonitorInfo {
     pub rect: ScreenRect,
     pub name: String,
     pub focused: bool,
-    pub active_workspace: WorkspaceId,
-}
-
-/// Hyprland's workspace address, with a numeric ID fallback for older IPC replies.
-/// The address takes precedence when both fields are present.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
-pub enum WorkspaceId {
-    Address { address: String },
-    Legacy { id: i64 },
+    pub active_workspace_id: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

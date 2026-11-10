@@ -73,7 +73,8 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
         resolve_initial_mode(&cfg.freeze_buttons, crate::domain::state::load_last_mode());
 
     let monitors = hyprland::parse_monitors(monitors_raw);
-    let windows = hyprland::parse_windows(clients_raw, &monitors);
+    let active_ws_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
+    let windows = hyprland::parse_windows(clients_raw, &active_ws_ids);
 
     // Compute origin before monitors are moved into Arc.
     // capture_all_monitors places (min_x, min_y) at image pixel (0,0); we need this
