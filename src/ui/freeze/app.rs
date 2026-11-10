@@ -836,8 +836,8 @@ fn hit_index(
     let gx = p.x + offset.x;
     let gy = p.y + offset.y;
 
-    // Single pass: floating windows sort before tiled (!floating = false < true),
-    // then by focus_history_id ascending (0 = most recently focused = topmost).
+    // Special workspaces overlay regular windows. Within each group, floating
+    // windows come first, followed by the most recently focused.
     windows
         .iter()
         .enumerate()
@@ -848,7 +848,7 @@ fn hit_index(
                 && gy >= r.y as f32
                 && gy < (r.y + r.h) as f32
         })
-        .min_by_key(|(_, w)| (!w.floating, w.focus_history_id))
+        .min_by_key(|(_, w)| (!w.on_special_workspace, !w.floating, w.focus_history_id))
         .map(|(i, _)| i)
 }
 

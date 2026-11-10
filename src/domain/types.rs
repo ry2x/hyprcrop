@@ -42,6 +42,8 @@ pub struct WindowInfo {
     /// Used to match `zwlr_foreign_toplevel_handle_v1` when capturing via v2 protocol.
     pub class: String,
     pub floating: bool,
+    /// A window on a visible special workspace is drawn above ordinary windows.
+    pub on_special_workspace: bool,
     /// Lower = more recently focused (0 = topmost floating window).
     pub focus_history_id: i64,
     /// Hyprland window address (from `hyprctl clients`).
@@ -55,6 +57,8 @@ pub struct MonitorInfo {
     pub name: String,
     pub focused: bool,
     pub active_workspace: WorkspaceId,
+    /// The special workspace currently shown over this monitor, if any.
+    pub special_workspace: Option<WorkspaceId>,
 }
 
 /// Hyprland's workspace address, with a numeric ID fallback for older IPC replies.
