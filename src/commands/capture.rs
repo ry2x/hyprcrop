@@ -94,8 +94,10 @@ pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
     if cfg.window_use_toplevel_export {
         // Try toplevel_export first — captures the window buffer directly from the
         // compositor, so overlapping windows are NOT included in the result.
+        let active_workspace_ids: Vec<i64> =
+            monitors.iter().map(|m| m.active_workspace_id).collect();
         let clients = hyprland::get_clients()?;
-        let windows = hyprland::parse_windows(clients, &monitors);
+        let windows = hyprland::parse_windows(clients, &active_workspace_ids);
 
         if let Some(win) = windows.iter().find(|w| {
             w.rect.x == active.at[0]

@@ -6,9 +6,7 @@ use std::path::PathBuf;
 
 use crate::domain::constants::FREEZE_LAYER_NAMESPACE;
 use crate::domain::error::{AppError, Result};
-use crate::domain::types::{
-    BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo, WorkspaceId,
-};
+use crate::domain::types::{BorderStyle, LayerSurface, MonitorInfo, ScreenRect, WindowInfo};
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -19,14 +17,19 @@ pub struct HyprMonitor {
     pub height: i32,
     pub name: String,
     pub focused: bool,
-    pub active_workspace: WorkspaceId,
+    pub active_workspace: HyprWorkspace,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct HyprWorkspace {
+    pub id: i64,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct HyprClient {
     pub hidden: bool,
-    pub workspace: WorkspaceId,
+    pub workspace: HyprWorkspace,
     pub at: [i32; 2],
     pub size: [i32; 2],
     pub title: String,
@@ -216,19 +219,22 @@ pub fn parse_monitors(monitors: Vec<HyprMonitor>) -> Vec<MonitorInfo> {
             },
             name: m.name,
             focused: m.focused,
-            active_workspace: m.active_workspace,
+            active_workspace_id: m.active_workspace.id,
         })
         .collect()
 }
 
-pub(crate) fn parse_windows(clients: Vec<HyprClient>, monitors: &[MonitorInfo]) -> Vec<WindowInfo> {
+pub(crate) fn parse_windows(
+    clients: Vec<HyprClient>,
+    active_workspace_ids: &[i64],
+) -> Vec<WindowInfo> {
     clients
         .into_iter()
         .filter_map(|c| {
             if c.hidden {
                 return None;
             }
-            if !monitors.iter().any(|m| m.active_workspace == c.workspace) {
+            if !active_workspace_ids.contains(&c.workspace.id) {
                 return None;
             }
             let w = c.size[0];
@@ -268,56 +274,24 @@ pub(crate) fn parse_windows(clients: Vec<HyprClient>, monitors: &[MonitorInfo]) 
 mod tests {
     use super::*;
 
-    fn legacy_monitor() -> HyprMonitor {
-        serde_json::from_str(
-            r#"{
-                "x": 0, "y": 0, "width": 1920, "height": 1080,
-                "name": "DP-1", "focused": true,
-                "activeWorkspace": {"id": 1, "name": "1"}
-            }"#,
-        )
-        .unwrap()
-    }
-
     #[test]
     fn test_monitor_parsing() {
-        let parsed = parse_monitors(vec![legacy_monitor()]);
+        let monitors = vec![HyprMonitor {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            name: "DP-1".to_string(),
+            focused: true,
+            active_workspace: HyprWorkspace { id: 1 },
+        }];
+
+        let parsed = parse_monitors(monitors);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].name, "DP-1");
         assert_eq!(parsed[0].rect.w, 1920);
         assert!(parsed[0].focused);
-        assert_eq!(parsed[0].active_workspace, WorkspaceId::Legacy { id: 1 });
-    }
-
-    #[test]
-    fn test_named_workspace_without_id() {
-        let monitors = serde_json::from_str(
-            r#"[{
-                "x": 0, "y": 0, "width": 1920, "height": 1080,
-                "name": "DP-1", "focused": true,
-                "activeWorkspace": {"address": "game", "type": "normal", "name": "game"}
-            }]"#,
-        )
-        .unwrap();
-        let clients = serde_json::from_str(
-            r#"[
-                {
-                    "hidden": false, "at": [0, 0], "size": [800, 600],
-                    "title": "Steam", "class": "steam", "floating": false, "focusHistoryID": 0,
-                    "workspace": {"address": "game", "type": "normal", "name": "game"}
-                },
-                {
-                    "hidden": false, "at": [0, 0], "size": [800, 600],
-                    "title": "Other", "class": "app", "floating": false, "focusHistoryID": 1,
-                    "workspace": {"address": "2", "id": 2, "type": "normal", "name": "game"}
-                }
-            ]"#,
-        )
-        .unwrap();
-
-        let windows = parse_windows(clients, &parse_monitors(monitors));
-        assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0].class, "steam");
+        assert_eq!(parsed[0].active_workspace_id, 1);
     }
 
     #[test]
@@ -385,7 +359,7 @@ mod tests {
         let clients = vec![
             HyprClient {
                 hidden: false,
-                workspace: WorkspaceId::Legacy { id: 1 },
+                workspace: HyprWorkspace { id: 1 },
                 at: [100, 100],
                 size: [800, 600],
                 title: "Visible Window".to_string(),
@@ -396,7 +370,7 @@ mod tests {
             },
             HyprClient {
                 hidden: true,
-                workspace: WorkspaceId::Legacy { id: 1 },
+                workspace: HyprWorkspace { id: 1 },
                 at: [200, 200],
                 size: [800, 600],
                 title: "Hidden Window".to_string(),
@@ -407,7 +381,7 @@ mod tests {
             },
             HyprClient {
                 hidden: false,
-                workspace: WorkspaceId::Legacy { id: 2 },
+                workspace: HyprWorkspace { id: 2 },
                 at: [300, 300],
                 size: [800, 600],
                 title: "Other Workspace Window".to_string(),
@@ -418,7 +392,8 @@ mod tests {
             },
         ];
 
-        let parsed = parse_windows(clients, &parse_monitors(vec![legacy_monitor()]));
+        let active_workspaces = vec![1];
+        let parsed = parse_windows(clients, &active_workspaces);
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].title, "Visible Window");
@@ -433,7 +408,7 @@ mod tests {
         let clients = vec![
             HyprClient {
                 hidden: false,
-                workspace: WorkspaceId::Legacy { id: 1 },
+                workspace: HyprWorkspace { id: 1 },
                 at: [0, 0],
                 size: [100, 100],
                 title: "Win".to_string(),
@@ -444,7 +419,7 @@ mod tests {
             },
             HyprClient {
                 hidden: false,
-                workspace: WorkspaceId::Legacy { id: 1 },
+                workspace: HyprWorkspace { id: 1 },
                 at: [0, 0],
                 size: [100, 100],
                 title: "BadAddr".to_string(),
@@ -454,7 +429,7 @@ mod tests {
                 address: "not_a_hex".to_string(),
             },
         ];
-        let parsed = parse_windows(clients, &parse_monitors(vec![legacy_monitor()]));
+        let parsed = parse_windows(clients, &[1]);
         // Valid address is parsed correctly.
         assert_eq!(parsed[0].address, 0xdeadbeef_u64);
         // Unparseable address falls back to 0; window is still included (not dropped).
