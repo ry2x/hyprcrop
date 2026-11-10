@@ -2,8 +2,12 @@
 
 [![MIT License](http://img.shields.io/badge/license-MIT-blue.svg?style=flat)](./LICENSE) [![Release](https://github.com/ry2x/hyprcrop/actions/workflows/release.yml/badge.svg)](https://github.com/ry2x/hyprcrop/actions/workflows/release.yml)
 
-A fast, Hyprland-native screenshot tool written in Rust.
-HyprCrop is not a wrapper of grim; it captures the screen directly via wayland APIs!
+A fast, compositor-aware screenshot tool written in Rust.
+HyprCrop is not a wrapper of grim; it captures the screen directly via Wayland APIs!
+
+Hyprland and MangoWM are supported. The compositor is detected automatically;
+set `HYPRCROP_COMPOSITOR=hyprland` or `HYPRCROP_COMPOSITOR=mango` to override
+that detection.
 
 ## Roadmap
 
@@ -28,9 +32,10 @@ After these changes, I will release as v1.0.0, marking the first stable release 
 
 | Package                         | Note                                                    |
 | :------------------------------ | :------------------------------------------------------ |
-| **Hyprland**                    | Tested on `v0.5.3` and later.                           |
+| **Hyprland**                    | Tested on `v0.5.3` and later; required for Hyprland IPC and direct window export. |
+| **MangoWM**                     | Requires Mango's IPC socket exposed through `MANGO_INSTANCE_SIGNATURE`.         |
 | **libnotify**                   | Required for desktop notifications.                     |
-| **xdg-desktop-portal-hyprland** | Required for portal capture mode.                       |
+| **xdg-desktop-portal-wlr/hyprland** | Required for portal capture mode.                    |
 | **pipewire**                    | Required for screen capture.                            |
 | **slurp**                       | Required for interactive region selection in crop mode. |
 | **wl-clipboard**                | Required for copying screenshots to the clipboard.      |
@@ -77,7 +82,7 @@ hyprcrop [--config <FILE>] <SUBCOMMAND>
 | Subcommand        | Description                                                                          |
 | :---------------- | :----------------------------------------------------------------------------------- |
 | `crop`            | Select a region with slurp and capture it                                            |
-| `window`          | Capture the active window (geometry via Hyprland IPC)                                |
+| `window`          | Capture the active window (geometry via compositor IPC)                              |
 | `portal`          | Capture a selected window or monitor via xdg-desktop-portal (shows WM source-picker) |
 | `monitor`         | Capture the focused monitor                                                          |
 | `all`             | Capture all monitors                                                                 |
@@ -130,6 +135,36 @@ hl.bind("SUPER + S",            hl.dsp.exec_cmd("hyprcrop monitor") )
 hl.bind("SUPER + SHIFT + S",    hl.dsp.exec_cmd("hyprcrop freeze") )
 hl.bind("Print",                hl.dsp.exec_cmd("hyprcrop all") )
 ```
+
+### MangoWM key-bind example
+
+```ini
+bind=NONE,Print,spawn,hyprcrop all
+bind=SHIFT,Print,spawn,hyprcrop crop
+bind=CTRL+SHIFT,Print,spawn,hyprcrop window
+bind=CTRL+SUPER,Print,spawn,hyprcrop freeze
+```
+
+Mango support uses Mango's JSON IPC for monitor and window geometry. Direct
+Hyprland toplevel export is not available on MangoWM; window capture falls
+back to Wayland screencopy cropping.
+
+### Compositor support
+
+| Feature | Hyprland | MangoWM |
+| :------ | :------: | :------: |
+| crop / monitor / all | ✅ | ✅ |
+| active window | ✅ | ✅ |
+| freeze selection | ✅ | ✅* |
+| direct window capture | Hyprland export | screencopy fallback |
+| portal capture | ✅ | ✅** |
+
+\* MangoWM does not currently expose layer-shell geometry or complete fstack
+ordering through IPC. Freeze Mode uses visible clients and the focused-client
+signal; overlapping unfocused windows may therefore be ambiguous, and panels
+are not separately hit-tested.
+
+\*\* Portal availability depends on the installed desktop portal.
 
 ## Configuration
 

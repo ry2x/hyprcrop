@@ -3,7 +3,7 @@ name = "hyprcrop"
 version = "0.5.6"
 edition = "2024"
 authors = ["ry2x"]
-description = "A fast, Hyprland-native screenshot tool written in Rust."
+description = "A fast, compositor-aware Wayland screenshot tool written in Rust."
 readme = "README.md"
 repository = "https://github.com/ry2x/hyprcrop"
 

@@ -9,7 +9,7 @@
 //! | Module | Contents |
 //! |---|---|
 //! | [`capture`] | Screenshot capture backends (screencopy / portal) |
-//! | [`system`] | Thin wrappers for OS commands, clipboard, Hyprland IPC, and notifications |
+//! | [`system`] | Thin wrappers for OS commands, clipboard, compositor IPC, and notifications |
 
 pub mod capture;
 pub mod system;

@@ -66,9 +66,9 @@ pub struct Config {
     #[serde(default)]
     pub toolbar_position: ToolbarPosition,
 
-    /// When `true`, window captures include the Hyprland border (expanded by
-    /// `general:border_size` on each side) and the freeze-mode overlay draws
-    /// rounded highlight frames matching `decoration:rounding`.
+    /// When `true`, window captures include the compositor border when that
+    /// metadata is available (Hyprland: `general:border_size`) and the
+    /// freeze-mode overlay draws matching rounded highlight frames.
     #[serde(default = "default_capture_window_border")]
     pub capture_window_border: bool,
 
@@ -85,9 +85,10 @@ pub struct Config {
     #[serde(default)]
     pub freeze_buttons: FreezeButtons,
 
-    /// When `true`, freeze-mode window capture and `hyprcrop window` capture
-    /// use `hyprland-toplevel-export-v1` to directly capture
-    /// the window surface instead of cropping from the frozen monitor image.
+    /// When `true`, Hyprland freeze-mode window capture and `hyprcrop window`
+    /// capture use `hyprland-toplevel-export-v1` to directly capture the
+    /// window surface instead of cropping from the frozen monitor image.
+    /// MangoWM and other compositors use screencopy cropping instead.
     /// `capture_window_border` has no effect when toplevel export succeeds.
     #[serde(default = "default_window_use_toplevel_export")]
     pub window_use_toplevel_export: bool,

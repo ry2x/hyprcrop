@@ -8,10 +8,9 @@ use crate::domain::error::{AppError, Result};
 use crate::domain::geometry::{
     clamp_crop, logical_to_physical, monitor_origin, parse_slurp_geometry,
 };
-use crate::domain::types::ScreenRect;
 use crate::platform::capture::{screencopy, toplevel_export};
 use crate::platform::system::cmd::CMD_SLURP;
-use crate::platform::system::hyprland;
+use crate::platform::system::compositor::{self, CompositorBackend, CompositorKind};
 
 fn slurp_region() -> Result<String> {
     let output = Command::new(CMD_SLURP)
@@ -45,7 +44,8 @@ fn slurp_region() -> Result<String> {
 pub fn capture_crop(cfg: &Config) -> Result<PathBuf> {
     // Fetch monitor layout before blocking on slurp so the layout snapshot used to
     // interpret slurp's logical coordinates stays stable while the user selects.
-    let monitors = hyprland::parse_monitors(hyprland::get_monitors()?);
+    let backend = compositor::detect()?;
+    let monitors = backend.monitors()?;
     let region = slurp_region()?;
     let (slurp_x, slurp_y, req_w, req_h) = parse_slurp_geometry(&region)?;
 
@@ -87,23 +87,21 @@ pub fn capture_crop(cfg: &Config) -> Result<PathBuf> {
 }
 
 pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
-    let active = hyprland::get_active_window()?;
+    let backend = compositor::detect()?;
+    let active = backend.active_window()?;
 
-    let monitors = hyprland::parse_monitors(hyprland::get_monitors()?);
+    let monitors = backend.monitors()?;
 
-    if cfg.window_use_toplevel_export {
+    if cfg.window_use_toplevel_export && backend.kind() == CompositorKind::Hyprland {
         // Try toplevel_export first — captures the window buffer directly from the
         // compositor, so overlapping windows are NOT included in the result.
-        let active_workspace_ids: Vec<i64> =
-            monitors.iter().map(|m| m.active_workspace_id).collect();
-        let clients = hyprland::get_clients()?;
-        let windows = hyprland::parse_windows(clients, &active_workspace_ids);
+        let windows = backend.windows()?;
 
         if let Some(win) = windows.iter().find(|w| {
-            w.rect.x == active.at[0]
-                && w.rect.y == active.at[1]
-                && w.rect.w == active.size[0]
-                && w.rect.h == active.size[1]
+            w.rect.x == active.rect.x
+                && w.rect.y == active.rect.y
+                && w.rect.w == active.rect.w
+                && w.rect.h == active.rect.h
         }) {
             let path = cfg.output_path();
             match toplevel_export::capture_toplevel_to_path(win, &path) {
@@ -120,18 +118,12 @@ pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
 
     // Fallback: screencopy + crop (includes overlapping windows).
     let border_size = if cfg.capture_window_border {
-        hyprland::get_border_style().border_size
+        backend.border_style().border_size
     } else {
         0
     };
 
-    let win_rect = ScreenRect {
-        x: active.at[0],
-        y: active.at[1],
-        w: active.size[0],
-        h: active.size[1],
-    }
-    .expand(border_size);
+    let win_rect = active.rect.expand(border_size);
 
     let win_x = win_rect.x;
     let win_y = win_rect.y;
@@ -155,7 +147,7 @@ pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
     // Derive scale from actual frame dimensions (handles HiDPI without a separate field).
     if mon.rect.w <= 0 || mon.rect.h <= 0 {
         return Err(AppError::Other(format!(
-            "Monitor '{}' has invalid dimensions ({}x{}) in Hyprland IPC data",
+            "Monitor '{}' has invalid dimensions ({}x{}) in compositor IPC data",
             mon.name, mon.rect.w, mon.rect.h
         )));
     }
@@ -185,8 +177,9 @@ pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
 }
 
 pub fn capture_monitor(cfg: &Config) -> Result<PathBuf> {
-    let monitors = hyprland::get_monitors()?;
-    let focused = monitors
+    let backend = compositor::detect()?;
+    let focused = backend
+        .monitors()?
         .into_iter()
         .find(|m| m.focused)
         .ok_or(AppError::NoFocusedMonitor)?;
@@ -202,7 +195,8 @@ pub fn capture_portal(cfg: &Config) -> Result<PathBuf> {
 }
 
 pub fn capture_all(cfg: &Config) -> Result<PathBuf> {
-    let monitors = hyprland::parse_monitors(hyprland::get_monitors()?);
+    let backend = compositor::detect()?;
+    let monitors = backend.monitors()?;
     let img = screencopy::capture_all_monitors(&monitors)?;
 
     let path = cfg.output_path();

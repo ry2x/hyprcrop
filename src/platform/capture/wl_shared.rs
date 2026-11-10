@@ -80,6 +80,21 @@ pub fn dispatch_until<S>(
 
 // ── read_pixel_rgba ────────────────────────────────────────────────────────────
 
+/// Return the number of bytes occupied by one pixel in a wl_shm format.
+#[inline]
+pub fn bytes_per_pixel(format: WEnum<wl_shm::Format>) -> usize {
+    match format {
+        WEnum::Value(
+            wl_shm::Format::Argb8888
+            | wl_shm::Format::Xrgb8888
+            | wl_shm::Format::Abgr8888
+            | wl_shm::Format::Xbgr8888,
+        ) => 4,
+        WEnum::Value(wl_shm::Format::Rgb888 | wl_shm::Format::Bgr888) => 3,
+        _ => 0,
+    }
+}
+
 /// Convert a pixel at byte `offset` in `data` to RGBA based on the wl_shm format.
 ///
 /// Wayland shm format memory layout (little-endian):
@@ -87,16 +102,19 @@ pub fn dispatch_until<S>(
 /// - XRGB8888: bytes = [Blue, Green, Red, X]      → alpha forced to 255
 /// - ABGR8888: bytes = [Red, Green, Blue, Alpha]  → real alpha
 /// - XBGR8888: bytes = [Red, Green, Blue, X]      → alpha forced to 255
+/// - RGB888: bytes = [Blue, Green, Red]            → alpha forced to 255
+/// - BGR888: bytes = [Red, Green, Blue]            → alpha forced to 255
 ///
 /// Non-panicking: if the buffer is too small, logs a warning and returns
 /// transparent black.
 #[inline]
 pub fn read_pixel_rgba(data: &[u8], offset: usize, format: WEnum<wl_shm::Format>) -> Rgba<u8> {
-    // Need 4 bytes (offset..offset+3); checked_add avoids wrapping on 32-bit targets.
-    let ok = offset
-        .checked_add(3)
-        .is_some_and(|max_idx| max_idx < data.len());
-    if !ok {
+    let pixel_size = bytes_per_pixel(format);
+    let Some(end) = offset.checked_add(pixel_size) else {
+        eprintln!("read_pixel_rgba: offset {offset} overflows for format {format:?}");
+        return Rgba([0, 0, 0, 0]);
+    };
+    if pixel_size == 0 || end > data.len() {
         eprintln!(
             "read_pixel_rgba: offset {offset} out of bounds for buffer length {} (format: {format:?})",
             data.len()
@@ -106,24 +124,22 @@ pub fn read_pixel_rgba(data: &[u8], offset: usize, format: WEnum<wl_shm::Format>
     let b0 = data[offset];
     let b1 = data[offset + 1];
     let b2 = data[offset + 2];
-    let b3 = data[offset + 3];
     match format {
         // ARGB8888: [B, G, R, A] → real alpha
-        WEnum::Value(wl_shm::Format::Argb8888) => Rgba([b2, b1, b0, b3]),
+        WEnum::Value(wl_shm::Format::Argb8888) => Rgba([b2, b1, b0, data[offset + 3]]),
         // XRGB8888: [B, G, R, X] → alpha forced 255
         WEnum::Value(wl_shm::Format::Xrgb8888) => Rgba([b2, b1, b0, 255]),
         // ABGR8888: [R, G, B, A] → real alpha
-        WEnum::Value(wl_shm::Format::Abgr8888) => Rgba([b0, b1, b2, b3]),
+        WEnum::Value(wl_shm::Format::Abgr8888) => Rgba([b0, b1, b2, data[offset + 3]]),
         // XBGR8888: [R, G, B, X] → alpha forced 255
         WEnum::Value(wl_shm::Format::Xbgr8888) => Rgba([b0, b1, b2, 255]),
+        // RGB888: [B, G, R] → alpha forced to 255
+        WEnum::Value(wl_shm::Format::Rgb888) => Rgba([b2, b1, b0, 255]),
+        // BGR888: [R, G, B] → alpha forced to 255
+        WEnum::Value(wl_shm::Format::Bgr888) => Rgba([b0, b1, b2, 255]),
         // Defensive fallback: the Buffer event handler whitelists supported
         // formats, so this branch should never be reached in practice.
-        _ => {
-            eprintln!(
-                "read_pixel_rgba: unsupported wl_shm format {format:?}, falling back to ARGB8888 layout"
-            );
-            Rgba([b2, b1, b0, b3])
-        }
+        _ => Rgba([0, 0, 0, 0]),
     }
 }
 
@@ -153,14 +169,20 @@ where
     let width_usize = width as usize;
     let height_usize = height as usize;
 
-    let bytes_per_row = width_usize.checked_mul(4).ok_or_else(|| {
+    let pixel_size = bytes_per_pixel(WEnum::Value(format));
+    if pixel_size == 0 {
+        return Err(AppError::Wayland(format!(
+            "unsupported wl_shm format for buffer allocation: {format:?}"
+        )));
+    }
+    let bytes_per_row = width_usize.checked_mul(pixel_size).ok_or_else(|| {
         AppError::Wayland(format!(
-            "invalid buffer dimensions: width {width} * 4 overflows usize"
+            "invalid buffer dimensions: width {width} * {pixel_size} overflows usize"
         ))
     })?;
-    if stride_usize < bytes_per_row || !stride_usize.is_multiple_of(4) {
+    if stride_usize < bytes_per_row {
         return Err(AppError::Wayland(format!(
-            "invalid stride: stride={stride} width={width} (expected ≥{bytes_per_row} and multiple of 4)"
+            "invalid stride: stride={stride} width={width} (expected ≥{bytes_per_row})"
         )));
     }
 
@@ -198,4 +220,49 @@ where
     pool.destroy();
 
     Ok((mmap, buffer))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_shm_pixel_sizes() {
+        assert_eq!(bytes_per_pixel(WEnum::Value(wl_shm::Format::Xrgb8888)), 4);
+        assert_eq!(bytes_per_pixel(WEnum::Value(wl_shm::Format::Rgb888)), 3);
+        assert_eq!(bytes_per_pixel(WEnum::Value(wl_shm::Format::Bgr888)), 3);
+    }
+
+    #[test]
+    fn decodes_rgb888() {
+        let pixel = read_pixel_rgba(&[0x10, 0x20, 0x30], 0, WEnum::Value(wl_shm::Format::Rgb888));
+        assert_eq!(pixel, Rgba([0x30, 0x20, 0x10, 255]));
+    }
+
+    #[test]
+    fn decodes_bgr888() {
+        // wl_shm BGR888 is stored as [R, G, B].
+        let pixel = read_pixel_rgba(&[0x30, 0x20, 0x10], 0, WEnum::Value(wl_shm::Format::Bgr888));
+        assert_eq!(pixel, Rgba([0x30, 0x20, 0x10, 255]));
+    }
+
+    #[test]
+    fn decodes_red_and_blue_for_24_bit_formats() {
+        let red_rgb = read_pixel_rgba(&[0, 0, 255], 0, WEnum::Value(wl_shm::Format::Rgb888));
+        let blue_rgb = read_pixel_rgba(&[255, 0, 0], 0, WEnum::Value(wl_shm::Format::Rgb888));
+        let red_bgr = read_pixel_rgba(&[255, 0, 0], 0, WEnum::Value(wl_shm::Format::Bgr888));
+        let blue_bgr = read_pixel_rgba(&[0, 0, 255], 0, WEnum::Value(wl_shm::Format::Bgr888));
+
+        assert_eq!(red_rgb, Rgba([255, 0, 0, 255]));
+        assert_eq!(blue_rgb, Rgba([0, 0, 255, 255]));
+        assert_eq!(red_bgr, Rgba([255, 0, 0, 255]));
+        assert_eq!(blue_bgr, Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn decodes_24_bit_pixel_after_row_padding() {
+        let data = [0xff, 0xff, 0xff, 0x10, 0x20, 0x30, 0xaa];
+        let pixel = read_pixel_rgba(&data, 3, WEnum::Value(wl_shm::Format::Bgr888));
+        assert_eq!(pixel, Rgba([0x10, 0x20, 0x30, 255]));
+    }
 }

@@ -223,7 +223,9 @@ impl Dispatch<hyprland_toplevel_export_frame_v1::HyprlandToplevelExportFrameV1, 
                         v @ (wl_shm::Format::Argb8888
                         | wl_shm::Format::Xrgb8888
                         | wl_shm::Format::Abgr8888
-                        | wl_shm::Format::Xbgr8888),
+                        | wl_shm::Format::Xbgr8888
+                        | wl_shm::Format::Rgb888
+                        | wl_shm::Format::Bgr888),
                     ) => v,
                     _ => {
                         fi.failed = true;
@@ -443,10 +445,11 @@ pub fn capture_toplevel_to_path(window: &WindowInfo, out_path: &Path) -> Result<
 
     let mut img: ImageBuffer<image::Rgba<u8>, Vec<u8>> = ImageBuffer::new(fi.width, fi.height);
     let stride = fi.stride as usize;
+    let pixel_size = wl_shared::bytes_per_pixel(format);
     for y in 0..fi.height {
         let row_offset = y as usize * stride;
         for x in 0..fi.width {
-            let offset = row_offset + x as usize * 4;
+            let offset = row_offset + x as usize * pixel_size;
             img.put_pixel(x, y, wl_shared::read_pixel_rgba(mmap, offset, format));
         }
     }

@@ -26,6 +26,18 @@ pub enum AppError {
     #[error("Hyprland IPC protocol error: {0}")]
     HyprlandProtocol(String),
 
+    #[error("Compositor IPC error ({0}): {1}")]
+    CompositorIpc(String, #[source] std::io::Error),
+
+    #[error("Compositor environment variable {0} error: {1}")]
+    CompositorEnvVar(&'static str, #[source] std::env::VarError),
+
+    #[error("Compositor protocol error: {0}")]
+    CompositorProtocol(String),
+
+    #[error("Unsupported or undetected compositor: {0}")]
+    UnsupportedCompositor(String),
+
     #[error("JSON parse error in {0}: {1}")]
     JsonParse(String, #[source] serde_json::Error),
 

@@ -33,21 +33,24 @@ use crate::domain::error::{AppError, Result};
 use crate::domain::types::{BorderStyle, ScreenRect};
 use crate::platform::capture::screencopy;
 use crate::platform::capture::toplevel_export;
-use crate::platform::system::hyprland::{self};
+use crate::platform::system::compositor::{self, CompositorBackend, CompositorKind};
 
 pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
-    // Fetch Hyprland data in parallel threads for speed.
-    // At most 3 concurrent connections (monitors, clients, layers) — well within
-    // Hyprland's IPC capacity. Border style is fetched after joining to avoid
-    // saturating the socket with 5 simultaneous connections (which caused BrokenPipe).
-    let monitors_t = std::thread::spawn(hyprland::get_monitors);
-    let clients_t = std::thread::spawn(hyprland::get_clients);
-    let layers_t = std::thread::spawn(hyprland::get_overlay_layers);
+    let backend = compositor::detect()?;
 
-    let monitors_raw = monitors_t
+    // Fetch compositor data in parallel threads for speed.  At most 3 concurrent
+    // IPC requests are made; border style is fetched after joining.
+    let monitors_backend = backend;
+    let monitors_t = std::thread::spawn(move || monitors_backend.monitors());
+    let clients_backend = backend;
+    let clients_t = std::thread::spawn(move || clients_backend.windows());
+    let layers_backend = backend;
+    let layers_t = std::thread::spawn(move || layers_backend.overlay_layers());
+
+    let monitors = monitors_t
         .join()
         .map_err(|_| AppError::Other("monitors thread panicked".into()))??;
-    let clients_raw = clients_t
+    let windows = clients_t
         .join()
         .map_err(|_| AppError::Other("clients thread panicked".into()))??;
     let layers = layers_t
@@ -65,16 +68,12 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
     // captures the raw window surface, no compositor decorations). Suppress it here
     // rather than mutating the global config flag, so non-freeze commands are unaffected.
     let border_style = if cfg.capture_window_border {
-        hyprland::get_border_style()
+        backend.border_style()
     } else {
         BorderStyle::default()
     };
     let initial_mode =
         resolve_initial_mode(&cfg.freeze_buttons, crate::domain::state::load_last_mode());
-
-    let monitors = hyprland::parse_monitors(monitors_raw);
-    let active_ws_ids: Vec<i64> = monitors.iter().map(|m| m.active_workspace_id).collect();
-    let windows = hyprland::parse_windows(clients_raw, &active_ws_ids);
 
     // Compute origin before monitors are moved into Arc.
     // capture_all_monitors places (min_x, min_y) at image pixel (0,0); we need this
@@ -212,7 +211,7 @@ pub fn run_freeze(cfg: &Config) -> Result<PathBuf> {
         Some(Some(FreezeSelection::ToplevelWindow(window))) => {
             let mut captured = false;
 
-            if cfg.window_use_toplevel_export {
+            if cfg.window_use_toplevel_export && backend.kind() == CompositorKind::Hyprland {
                 // Try toplevel-export first — captures the raw window buffer without
                 // overlapping windows.
                 if let Err(e) = toplevel_export::capture_toplevel_to_path(&window, &out_path) {

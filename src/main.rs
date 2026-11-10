@@ -8,7 +8,11 @@ use hyprcrop::platform::system::{clipboard, lock, notify};
 use hyprcrop::ui::freeze;
 
 #[derive(Parser)]
-#[command(name = "hyprcrop", about = "Hyprland screenshot tool", version)]
+#[command(
+    name = "hyprcrop",
+    about = "Wayland screenshot tool for Hyprland and MangoWM",
+    version
+)]
 struct Cli {
     /// Path to a custom config file (defaults to ~/.config/hyprcrop/config.toml)
     #[arg(long, short, global = true, value_name = "FILE")]
@@ -22,7 +26,7 @@ struct Cli {
 enum Commands {
     /// Select a region with slurp and capture it
     Crop,
-    /// Capture the active window (geometry via hyprctl)
+    /// Capture the active window (geometry via compositor IPC)
     Window,
     /// Capture the window via xdg-desktop-portal (not yet implemented)
     Portal,
