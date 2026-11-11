@@ -20,6 +20,7 @@ pub struct HyprMonitor {
     pub name: String,
     pub focused: bool,
     pub active_workspace: WorkspaceId,
+    pub special_workspace: Option<WorkspaceId>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -32,6 +33,8 @@ pub struct HyprClient {
     pub title: String,
     pub class: String,
     pub floating: bool,
+    #[serde(default)]
+    pub pinned: bool,
     #[serde(rename = "focusHistoryID")]
     pub focus_history_id: i64,
     /// Hex address string like `"0x..."`, used as the toplevel export handle.
@@ -43,6 +46,27 @@ pub struct HyprClient {
 pub struct HyprActiveWindow {
     pub at: [i32; 2],
     pub size: [i32; 2],
+    #[serde(default)]
+    pub address: String,
+}
+
+impl HyprActiveWindow {
+    pub(crate) fn find_window<'a>(&self, windows: &'a [WindowInfo]) -> Option<&'a WindowInfo> {
+        let active_address = parse_window_address(&self.address).filter(|address| *address != 0);
+        windows.iter().find(|window| match active_address {
+            Some(address) => window.address == address,
+            None => {
+                window.rect.x == self.at[0]
+                    && window.rect.y == self.at[1]
+                    && window.rect.w == self.size[0]
+                    && window.rect.h == self.size[1]
+            }
+        })
+    }
+}
+
+fn parse_window_address(address: &str) -> Option<u64> {
+    u64::from_str_radix(address.trim_start_matches("0x"), 16).ok()
 }
 
 fn hyprland_socket_path() -> Result<PathBuf> {
@@ -217,6 +241,11 @@ pub fn parse_monitors(monitors: Vec<HyprMonitor>) -> Vec<MonitorInfo> {
             name: m.name,
             focused: m.focused,
             active_workspace: m.active_workspace,
+            // Hyprland uses an empty address (or legacy ID 0) for a closed special workspace.
+            special_workspace: m.special_workspace.filter(|workspace| match workspace {
+                WorkspaceId::Address { address } => !address.is_empty(),
+                WorkspaceId::Legacy { id } => *id != 0,
+            }),
         })
         .collect()
 }
@@ -228,7 +257,10 @@ pub(crate) fn parse_windows(clients: Vec<HyprClient>, monitors: &[MonitorInfo]) 
             if c.hidden {
                 return None;
             }
-            if !monitors.iter().any(|m| m.active_workspace == c.workspace) {
+            let on_special_workspace = monitors
+                .iter()
+                .any(|m| m.special_workspace.as_ref() == Some(&c.workspace));
+            if !on_special_workspace && !monitors.iter().any(|m| m.active_workspace == c.workspace) {
                 return None;
             }
             let w = c.size[0];
@@ -239,7 +271,7 @@ pub(crate) fn parse_windows(clients: Vec<HyprClient>, monitors: &[MonitorInfo]) 
             let address = if c.address.is_empty() {
                 0
             } else {
-                u64::from_str_radix(c.address.trim_start_matches("0x"), 16).unwrap_or_else(|_| {
+                parse_window_address(&c.address).unwrap_or_else(|| {
                     eprintln!(
                         "[hyprcrop] warning: failed to parse window address '{}' for '{}', defaulting to 0",
                         c.address, c.title
@@ -257,6 +289,8 @@ pub(crate) fn parse_windows(clients: Vec<HyprClient>, monitors: &[MonitorInfo]) 
                 title: c.title,
                 class: c.class,
                 floating: c.floating,
+                pinned: c.pinned,
+                on_special_workspace,
                 focus_history_id: c.focus_history_id,
                 address,
             })
@@ -318,6 +352,61 @@ mod tests {
         let windows = parse_windows(clients, &parse_monitors(monitors));
         assert_eq!(windows.len(), 1);
         assert_eq!(windows[0].class, "steam");
+    }
+
+    #[test]
+    fn test_windows_on_special_workspaces() {
+        use serde_json::json;
+
+        let modern_special =
+            json!({"address": "special:tools", "type": "special", "name": "special:tools"});
+        let legacy_special = json!({"id": -98, "name": "special:tools"});
+        for (active, shown, closed) in [
+            (
+                json!({"address": "1", "id": 1, "type": "normal", "name": "1"}),
+                modern_special,
+                json!({"address": "", "type": "", "name": ""}),
+            ),
+            (
+                json!({"id": 1, "name": "1"}),
+                legacy_special,
+                json!({"id": 0, "name": ""}),
+            ),
+        ] {
+            let client_payload: Vec<_> = [&active, &shown, &closed]
+                .into_iter()
+                .enumerate()
+                .map(|(i, workspace)| {
+                    json!({
+                        "hidden": false, "at": [0, 0], "size": [800, 600],
+                        "title": i.to_string(), "class": "app", "floating": false,
+                        "focusHistoryID": i, "workspace": workspace,
+                        "address": format!("0x{:x}", i + 1),
+                    })
+                })
+                .collect();
+
+            for (special, expected) in [(shown, vec![false, true]), (closed, vec![false])] {
+                let monitor = serde_json::from_value(json!({
+                    "x": 0, "y": 0, "width": 1920, "height": 1080,
+                    "name": "DP-1", "focused": true,
+                    "activeWorkspace": active, "specialWorkspace": special,
+                }))
+                .unwrap();
+                let clients = serde_json::from_value(json!(client_payload)).unwrap();
+                let windows = parse_windows(clients, &parse_monitors(vec![monitor]));
+                let on_special: Vec<_> = windows.iter().map(|w| w.on_special_workspace).collect();
+                assert_eq!(on_special, expected);
+
+                // The regular and special windows have identical geometry.
+                let active: HyprActiveWindow = serde_json::from_value(json!({
+                    "at": [0, 0], "size": [800, 600], "address": "0x2",
+                }))
+                .unwrap();
+                let address = active.find_window(&windows).map(|window| window.address);
+                assert_eq!(address, expected.contains(&true).then_some(2));
+            }
+        }
     }
 
     #[test]
@@ -391,6 +480,7 @@ mod tests {
                 title: "Visible Window".to_string(),
                 class: "kitty".to_string(),
                 floating: false,
+                pinned: false,
                 focus_history_id: 1,
                 address: "0xd161e7b0".to_string(),
             },
@@ -402,6 +492,7 @@ mod tests {
                 title: "Hidden Window".to_string(),
                 class: "kitty".to_string(),
                 floating: false,
+                pinned: false,
                 focus_history_id: 2,
                 address: "0xd161e7c0".to_string(),
             },
@@ -413,6 +504,7 @@ mod tests {
                 title: "Other Workspace Window".to_string(),
                 class: "firefox".to_string(),
                 floating: false,
+                pinned: false,
                 focus_history_id: 3,
                 address: "0xd161e7d0".to_string(),
             },
@@ -439,6 +531,7 @@ mod tests {
                 title: "Win".to_string(),
                 class: "app".to_string(),
                 floating: false,
+                pinned: false,
                 focus_history_id: 0,
                 address: "0xdeadbeef".to_string(),
             },
@@ -450,6 +543,7 @@ mod tests {
                 title: "BadAddr".to_string(),
                 class: "app".to_string(),
                 floating: false,
+                pinned: false,
                 focus_history_id: 1,
                 address: "not_a_hex".to_string(),
             },

@@ -97,12 +97,7 @@ pub fn capture_window(cfg: &Config) -> Result<PathBuf> {
         let clients = hyprland::get_clients()?;
         let windows = hyprland::parse_windows(clients, &monitors);
 
-        if let Some(win) = windows.iter().find(|w| {
-            w.rect.x == active.at[0]
-                && w.rect.y == active.at[1]
-                && w.rect.w == active.size[0]
-                && w.rect.h == active.size[1]
-        }) {
+        if let Some(win) = active.find_window(&windows) {
             let path = cfg.output_path();
             match toplevel_export::capture_toplevel_to_path(win, &path) {
                 Ok(()) => return Ok(path),

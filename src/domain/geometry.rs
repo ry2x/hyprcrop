@@ -103,6 +103,7 @@ mod tests {
                 name: "DP-2".to_string(),
                 focused: false,
                 active_workspace: WorkspaceId::Legacy { id: 2 },
+                special_workspace: None,
             },
             MonitorInfo {
                 rect: ScreenRect {
@@ -114,6 +115,7 @@ mod tests {
                 name: "DP-1".to_string(),
                 focused: true,
                 active_workspace: WorkspaceId::Legacy { id: 1 },
+                special_workspace: None,
             },
         ];
         assert_eq!(monitor_origin(&monitors), (-1920, 0));
