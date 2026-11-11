@@ -42,6 +42,8 @@ pub struct WindowInfo {
     /// Used to match `zwlr_foreign_toplevel_handle_v1` when capturing via v2 protocol.
     pub class: String,
     pub floating: bool,
+    /// Pinned floating windows are drawn above special workspaces.
+    pub pinned: bool,
     /// A window on a visible special workspace is drawn above ordinary windows.
     pub on_special_workspace: bool,
     /// Lower = more recently focused (0 = topmost floating window).

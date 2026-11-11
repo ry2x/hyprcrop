@@ -836,8 +836,8 @@ fn hit_index(
     let gx = p.x + offset.x;
     let gy = p.y + offset.y;
 
-    // Special workspaces overlay regular windows. Within each group, floating
-    // windows come first, followed by the most recently focused.
+    // Pinned windows overlay special workspaces, which overlay regular windows.
+    // Within each group, floating windows precede the most recently focused.
     windows
         .iter()
         .enumerate()
@@ -848,7 +848,14 @@ fn hit_index(
                 && gy >= r.y as f32
                 && gy < (r.y + r.h) as f32
         })
-        .min_by_key(|(_, w)| (!w.on_special_workspace, !w.floating, w.focus_history_id))
+        .min_by_key(|(_, w)| {
+            (
+                !w.pinned,
+                !w.on_special_workspace,
+                !w.floating,
+                w.focus_history_id,
+            )
+        })
         .map(|(i, _)| i)
 }
 
@@ -884,4 +891,47 @@ pub fn app_view(state: &AppState, window: iced::window::Id) -> iced::Element<'_,
 
 pub fn app_subscription(state: &AppState) -> Subscription<Message> {
     state.subscription()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::system::hyprland::{parse_monitors, parse_windows};
+    use serde_json::json;
+
+    #[test]
+    fn test_pinned_window_over_special_workspace() {
+        for (pinned, expected) in [(true, 0), (false, 1)] {
+            let monitors = serde_json::from_value(json!([{
+                "x": 0, "y": 0, "width": 1920, "height": 1080,
+                "name": "DP-1", "focused": true,
+                "activeWorkspace": {"address": "1", "id": 1},
+                "specialWorkspace": {"address": "special:tools"},
+            }]))
+            .unwrap();
+            let clients = serde_json::from_value(json!([
+                {
+                    "hidden": false, "at": [100, 100], "size": [800, 600],
+                    "title": "Pinned", "class": "app", "floating": true,
+                    "pinned": pinned, "focusHistoryID": 10,
+                    "workspace": {"address": "1", "id": 1},
+                },
+                {
+                    "hidden": false, "at": [100, 100], "size": [800, 600],
+                    "title": "Special", "class": "app", "floating": false,
+                    "focusHistoryID": 0,
+                    "workspace": {"address": "special:tools"},
+                },
+            ]))
+            .unwrap();
+            let windows = parse_windows(clients, &parse_monitors(monitors));
+            assert_eq!(windows.len(), 2);
+            assert_eq!(windows[0].pinned, pinned);
+            assert!(!windows[1].pinned);
+            assert_eq!(
+                hit_index(&windows, Some(Point::new(200.0, 200.0)), Point::ORIGIN, 0),
+                Some(expected),
+            );
+        }
+    }
 }
